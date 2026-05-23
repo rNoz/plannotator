@@ -153,7 +153,9 @@ const teamSizes = [
                 <input type="email" name="email" placeholder="jane@company.com" autocomplete="email" maxlength="320" />
               </div>
               <div class="ws-field">
-                <label class="ws-label">Company</label>
+                <label class="ws-label">
+                  Company <span class="ws-opt">optional</span>
+                </label>
                 <input type="text" name="company" placeholder="Acme Inc." autocomplete="organization" maxlength="160" />
               </div>
             </div>
@@ -475,7 +477,10 @@ const teamSizes = [
         else if (!/^[^\s@]+@[^\s@.]+\.[^\s@]+$/.test(email)) {
           showErr(get('email'), 'Looks invalid'); ok = false;
         }
-        if (!company) { showErr(get('company'), 'Required'); ok = false; }
+        // Company is presented as optional in the UI. The worker still
+        // requires a non-empty value, so stub one here when the user
+        // leaves it blank — keeps the server contract untouched.
+        if (!company) company = '(not provided)';
         if (!team_size) {
           showErr(form.querySelector('[data-field="teamSize"]'), 'Pick one');
           ok = false;
