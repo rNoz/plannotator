@@ -33,105 +33,6 @@ function apiArgs(host: string, endpoint: string, extra: string[] = []): string[]
   return args;
 }
 
-/** Shape of each entry from the GitLab merge_request diffs API */
-interface GitLabDiffEntry {
-  diff: string;
-  old_path: string;
-  new_path: string;
-  new_file: boolean;
-  deleted_file: boolean;
-  renamed_file: boolean;
-}
-
-/**
- * Parse output of `glab api --paginate`.
- *
- * glab concatenates pages as adjacent JSON arrays (`[...][...]`) which is not
- * valid JSON. Walk the output, split it into top-level arrays, and merge them.
- * Single-page output (the common case) round-trips through the same path.
- */
-export function parsePaginatedArray<T>(stdout: string): T[] {
-  const trimmed = stdout.trim();
-  if (!trimmed) return [];
-
-  const slices: string[] = [];
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let start = -1;
-
-  for (let i = 0; i < trimmed.length; i++) {
-    const c = trimmed[i];
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (c === "\\") {
-        escape = true;
-      } else if (c === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (c === '"') {
-      inString = true;
-      continue;
-    }
-    if (c === "[" || c === "{") {
-      if (depth === 0 && c === "[") start = i;
-      depth++;
-    } else if (c === "]" || c === "}") {
-      depth--;
-      if (depth === 0 && c === "]" && start !== -1) {
-        slices.push(trimmed.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-
-  if (slices.length === 0) {
-    return JSON.parse(trimmed) as T[];
-  }
-
-  const merged: T[] = [];
-  for (const slice of slices) {
-    const page = JSON.parse(slice) as T[];
-    if (Array.isArray(page)) merged.push(...page);
-  }
-  return merged;
-}
-
-/**
- * Reconstruct a unified patch from GitLab's merge_request diffs API response.
- *
- * Each entry has: { diff, old_path, new_path, new_file, deleted_file, renamed_file }
- * We construct proper `diff --git` headers that the UI parser expects.
- */
-function reconstructPatch(diffs: GitLabDiffEntry[]): string {
-  const parts: string[] = [];
-
-  for (const d of diffs) {
-    const aPath = d.new_file ? "/dev/null" : `a/${d.old_path}`;
-    const bPath = d.deleted_file ? "/dev/null" : `b/${d.new_path}`;
-    const displayOld = d.new_file ? d.new_path : d.old_path;
-    const displayNew = d.deleted_file ? d.old_path : d.new_path;
-
-    let header = `diff --git a/${displayOld} b/${displayNew}`;
-    if (d.renamed_file) {
-      header += `\nrename from ${d.old_path}\nrename to ${d.new_path}`;
-    }
-    if (d.new_file) {
-      header += "\nnew file mode 100644";
-    }
-    if (d.deleted_file) {
-      header += "\ndeleted file mode 100644";
-    }
-
-    parts.push(`${header}\n--- ${aPath}\n+++ ${bPath}\n${d.diff}`);
-  }
-
-  return parts.join("");
-}
-
 // --- Auth ---
 
 export async function checkGlAuth(runtime: PRRuntime, host: string): Promise<void> {
@@ -170,9 +71,11 @@ export async function fetchGlMR(
 ): Promise<{ metadata: PRMetadata; rawPatch: string }> {
   const encoded = encodeProject(ref.projectPath);
 
-  // Fetch diff and metadata in parallel via glab api (supports --hostname for self-hosted)
+  // Fetch raw unified diff text instead of reconstructing from the JSON diffs API.
+  // The JSON API can omit collapsed/generated file contents and loses Git's
+  // binary marker shape; raw_diffs preserves what downstream diff parsers expect.
   const [diffResult, viewResult] = await Promise.all([
-    runtime.runCommand("glab", apiArgs(ref.host, `projects/${encoded}/merge_requests/${ref.iid}/diffs?per_page=100`, ["--paginate"])),
+    runtime.runCommand("glab", apiArgs(ref.host, `projects/${encoded}/merge_requests/${ref.iid}/raw_diffs`)),
     runtime.runCommand("glab", apiArgs(ref.host, `projects/${encoded}/merge_requests/${ref.iid}`)),
   ]);
 
@@ -188,9 +91,7 @@ export async function fetchGlMR(
     );
   }
 
-  // Reconstruct unified patch from structured API response
-  const diffs = parsePaginatedArray<GitLabDiffEntry>(diffResult.stdout);
-  const rawPatch = reconstructPatch(diffs);
+  const rawPatch = diffResult.stdout;
 
   const raw = JSON.parse(viewResult.stdout) as {
     title: string;

@@ -31,6 +31,8 @@ if ($Glimpse -and $NoGlimpse) {
 }
 
 $repo = "backnotprop/plannotator"
+$semRepo = "Ataraxy-Labs/sem"
+$semVersion = "v0.8.0"
 $installDir = "$env:LOCALAPPDATA\plannotator"
 
 # First plannotator release that carries SLSA build-provenance attestations.
@@ -114,6 +116,72 @@ if ($configDir -eq "~") {
 } elseif ($configDir.StartsWith("~/") -or $configDir.StartsWith('~\')) {
     $configDir = Join-Path $env:USERPROFILE ($configDir.Substring(2))
 }
+
+function Install-SemSidecar {
+    if ($env:PLANNOTATOR_SKIP_SEM_INSTALL -match '^(1|true|yes)$') {
+        Write-Host "Skipping semantic diff sidecar install (PLANNOTATOR_SKIP_SEM_INSTALL is set)"
+        return
+    }
+
+    $semAsset = if ($platform -eq "win32-x64") { "sem-windows-x86_64.zip" } else { $null }
+    if (-not $semAsset) {
+        Write-Host "Skipping semantic diff sidecar install (sem does not publish $platform)"
+        return
+    }
+
+    $semDir = Join-Path $configDir "vendor\sem\$semVersion"
+    $semPath = Join-Path $semDir "sem.exe"
+    if (Test-Path $semPath) {
+        try {
+            $versionText = & $semPath --version 2>$null
+            if ($LASTEXITCODE -eq 0 -and $versionText -match '^sem ') {
+                Write-Host "Semantic diff sidecar already installed at $semPath"
+                return
+            }
+        } catch {
+            # Replace invalid stale sidecar below.
+        }
+    }
+
+    $tmpSemDir = Join-Path ([System.IO.Path]::GetTempPath()) "plannotator-sem-$([System.Guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Force -Path $tmpSemDir | Out-Null
+
+    try {
+        $semBaseUrl = "https://github.com/$semRepo/releases/download/$semVersion"
+        $semArchive = Join-Path $tmpSemDir $semAsset
+        $semChecksums = Join-Path $tmpSemDir "checksums.txt"
+        Invoke-WebRequest -Uri "$semBaseUrl/$semAsset" -OutFile $semArchive -UseBasicParsing
+        Invoke-WebRequest -Uri "$semBaseUrl/checksums.txt" -OutFile $semChecksums -UseBasicParsing
+
+        $expected = (Get-Content $semChecksums | Where-Object { $_ -match "\s$([regex]::Escape($semAsset))$" } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+        if (-not $expected) {
+            Write-Host "Skipping semantic diff sidecar install (checksum missing for $semAsset)"
+            return
+        }
+
+        $actual = (Get-FileHash -Path $semArchive -Algorithm SHA256).Hash.ToLower()
+        if ($actual -ne $expected.ToLower()) {
+            Write-Host "Skipping semantic diff sidecar install (checksum mismatch)"
+            return
+        }
+
+        Expand-Archive -Force -Path $semArchive -DestinationPath $tmpSemDir
+        $extracted = Get-ChildItem -Path $tmpSemDir -Filter "sem.exe" -Recurse | Select-Object -First 1
+        if (-not $extracted) {
+            Write-Host "Skipping semantic diff sidecar install (binary missing from archive)"
+            return
+        }
+
+        New-Item -ItemType Directory -Force -Path $semDir | Out-Null
+        Copy-Item -Force $extracted.FullName $semPath
+        Write-Host "Semantic diff sidecar installed to $semPath"
+    } catch {
+        Write-Host "Skipping semantic diff sidecar install ($($_.Exception.Message))"
+    } finally {
+        Remove-Item -Recurse -Force $tmpSemDir -ErrorAction SilentlyContinue
+    }
+}
+
 $configPath = Join-Path $configDir "config.json"
 if (Test-Path $configPath) {
     try {
@@ -249,6 +317,8 @@ Move-Item -Force $tmpFile "$installDir\plannotator.exe"
 
 Write-Host ""
 Write-Host "plannotator $latestTag installed to $installDir\plannotator.exe"
+
+Install-SemSidecar
 
 # Add to PATH if not already there
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

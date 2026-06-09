@@ -2,6 +2,8 @@
 set -e
 
 REPO="backnotprop/plannotator"
+SEM_REPO="Ataraxy-Labs/sem"
+SEM_VERSION="v0.8.0"
 INSTALL_DIR="$HOME/.local/bin"
 
 # First plannotator release that carries SLSA build-provenance attestations.
@@ -378,6 +380,106 @@ chmod +x "$INSTALL_DIR/plannotator"
 
 echo ""
 echo "plannotator ${latest_tag} installed to ${INSTALL_DIR}/plannotator"
+
+sem_asset_for_platform() {
+    case "$platform" in
+        darwin-arm64) echo "sem-darwin-arm64.tar.gz" ;;
+        linux-arm64)  echo "sem-linux-arm64.tar.gz" ;;
+        linux-x64)    echo "sem-linux-x86_64.tar.gz" ;;
+        *)            return 1 ;;
+    esac
+}
+
+install_sem_sidecar() {
+    case "${PLANNOTATOR_SKIP_SEM_INSTALL:-}" in
+        1|true|yes|TRUE|YES|True|Yes)
+            echo "Skipping semantic diff sidecar install (PLANNOTATOR_SKIP_SEM_INSTALL is set)"
+            return 0
+            ;;
+    esac
+
+    sem_asset="$(sem_asset_for_platform 2>/dev/null || true)"
+    if [ -z "$sem_asset" ]; then
+        echo "Skipping semantic diff sidecar install (sem does not publish ${platform})"
+        return 0
+    fi
+
+    sem_dir="${_config_dir}/vendor/sem/${SEM_VERSION}"
+    sem_bin="${sem_dir}/sem"
+    if [ -x "$sem_bin" ] && "$sem_bin" --version 2>/dev/null | grep -q '^sem '; then
+        echo "Semantic diff sidecar already installed at ${sem_bin}"
+        return 0
+    fi
+
+    tmp_sem_dir="$(mktemp -d)"
+    sem_archive="${tmp_sem_dir}/${sem_asset}"
+    sem_checksums="${tmp_sem_dir}/checksums.txt"
+    sem_base_url="https://github.com/${SEM_REPO}/releases/download/${SEM_VERSION}"
+
+    if ! curl -fsSL -o "$sem_archive" "${sem_base_url}/${sem_asset}"; then
+        echo "Skipping semantic diff sidecar install (download failed)"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+    if ! curl -fsSL -o "$sem_checksums" "${sem_base_url}/checksums.txt"; then
+        echo "Skipping semantic diff sidecar install (checksum download failed)"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+
+    expected_sem_checksum="$(awk -v name="$sem_asset" '$2 == name { print $1 }' "$sem_checksums")"
+    if [ -z "$expected_sem_checksum" ]; then
+        echo "Skipping semantic diff sidecar install (checksum missing for ${sem_asset})"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+
+    if [ "$(uname -s)" = "Darwin" ]; then
+        actual_sem_checksum="$(shasum -a 256 "$sem_archive" | cut -d' ' -f1)"
+    else
+        actual_sem_checksum="$(sha256sum "$sem_archive" | cut -d' ' -f1)"
+    fi
+
+    if [ "$actual_sem_checksum" != "$expected_sem_checksum" ]; then
+        echo "Skipping semantic diff sidecar install (checksum mismatch)"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+
+    if ! tar -xzf "$sem_archive" -C "$tmp_sem_dir"; then
+        echo "Skipping semantic diff sidecar install (extract failed)"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+
+    extracted_sem="$(find "$tmp_sem_dir" -type f -name sem -print -quit)"
+    if [ -z "$extracted_sem" ]; then
+        echo "Skipping semantic diff sidecar install (binary missing from archive)"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+
+    if ! mkdir -p "$sem_dir"; then
+        echo "Skipping semantic diff sidecar install (directory creation failed)"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+    if ! cp "$extracted_sem" "$sem_bin"; then
+        echo "Skipping semantic diff sidecar install (copy failed)"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+    if ! chmod +x "$sem_bin"; then
+        echo "Skipping semantic diff sidecar install (chmod failed)"
+        rm -f "$sem_bin"
+        rm -rf "$tmp_sem_dir"
+        return 0
+    fi
+    rm -rf "$tmp_sem_dir"
+    echo "Semantic diff sidecar installed to ${sem_bin}"
+}
+
+install_sem_sidecar
 
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
     echo ""

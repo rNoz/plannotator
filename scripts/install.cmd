@@ -134,6 +134,8 @@ goto parse_args
 :args_done
 
 set "REPO=backnotprop/plannotator"
+set "SEM_REPO=Ataraxy-Labs/sem"
+set "SEM_VERSION=v0.8.0"
 set "INSTALL_DIR=%USERPROFILE%\.local\bin"
 
 REM First plannotator release that carries SLSA build-provenance attestations.
@@ -396,6 +398,8 @@ move /y "!TEMP_FILE!" "!INSTALL_PATH!" >nul
 
 echo.
 echo plannotator !TAG! installed to !INSTALL_PATH!
+
+call :InstallSemSidecar
 
 REM Check if install directory is in PATH
 echo !PATH! | findstr /i /c:"!INSTALL_DIR!" >nul
@@ -1002,6 +1006,108 @@ if exist "!PLUGIN_HOOKS!" if exist "!CLAUDE_SETTINGS!" (
 
 echo.
 exit /b 0
+
+REM ======================================================================
+REM Optional semantic diff sidecar install. Non-fatal: Plannotator remains
+REM installed if sem download, checksum, or extraction fails.
+REM ======================================================================
+:InstallSemSidecar
+if /i "!PLANNOTATOR_SKIP_SEM_INSTALL!"=="1" (
+    echo Skipping semantic diff sidecar install ^(PLANNOTATOR_SKIP_SEM_INSTALL is set^)
+    goto :eof
+)
+if /i "!PLANNOTATOR_SKIP_SEM_INSTALL!"=="true" (
+    echo Skipping semantic diff sidecar install ^(PLANNOTATOR_SKIP_SEM_INSTALL is set^)
+    goto :eof
+)
+if /i "!PLANNOTATOR_SKIP_SEM_INSTALL!"=="yes" (
+    echo Skipping semantic diff sidecar install ^(PLANNOTATOR_SKIP_SEM_INSTALL is set^)
+    goto :eof
+)
+
+set "SEM_ASSET="
+if /i "!PLATFORM!"=="win32-x64" set "SEM_ASSET=sem-windows-x86_64.zip"
+if not defined SEM_ASSET (
+    echo Skipping semantic diff sidecar install ^(sem does not publish !PLATFORM!^)
+    goto :eof
+)
+
+set "SEM_DIR=!_CONFIG_DIR!\vendor\sem\!SEM_VERSION!"
+set "SEM_PATH=!SEM_DIR!\sem.exe"
+if exist "!SEM_PATH!" (
+    "!SEM_PATH!" --version 2>nul | findstr /r /c:"^sem " >nul 2>&1
+    if !ERRORLEVEL! equ 0 (
+        echo Semantic diff sidecar already installed at !SEM_PATH!
+        goto :eof
+    )
+)
+
+set "SEM_BASE_URL=https://github.com/!SEM_REPO!/releases/download/!SEM_VERSION!"
+set "SEM_ARCHIVE=%TEMP%\plannotator-sem-%RANDOM%.zip"
+set "SEM_CHECKSUMS=%TEMP%\plannotator-sem-checksums-%RANDOM%.txt"
+set "SEM_EXTRACT=%TEMP%\plannotator-sem-%RANDOM%"
+mkdir "!SEM_EXTRACT!" >nul 2>&1
+
+curl -fsSL "!SEM_BASE_URL!/!SEM_ASSET!" -o "!SEM_ARCHIVE!"
+if !ERRORLEVEL! neq 0 (
+    echo Skipping semantic diff sidecar install ^(download failed^)
+    goto :sem_cleanup
+)
+
+curl -fsSL "!SEM_BASE_URL!/checksums.txt" -o "!SEM_CHECKSUMS!"
+if !ERRORLEVEL! neq 0 (
+    echo Skipping semantic diff sidecar install ^(checksum download failed^)
+    goto :sem_cleanup
+)
+
+set "EXPECTED_SEM_CHECKSUM="
+for /f "usebackq tokens=1,2" %%i in ("!SEM_CHECKSUMS!") do (
+    if "%%j"=="!SEM_ASSET!" set "EXPECTED_SEM_CHECKSUM=%%i"
+)
+if not defined EXPECTED_SEM_CHECKSUM (
+    echo Skipping semantic diff sidecar install ^(checksum missing for !SEM_ASSET!^)
+    goto :sem_cleanup
+)
+
+set "ACTUAL_SEM_CHECKSUM="
+for /f "skip=1 tokens=*" %%i in ('certutil -hashfile "!SEM_ARCHIVE!" SHA256') do (
+    if not defined ACTUAL_SEM_CHECKSUM (
+        set "ACTUAL_SEM_CHECKSUM=%%i"
+        set "ACTUAL_SEM_CHECKSUM=!ACTUAL_SEM_CHECKSUM: =!"
+    )
+)
+if /i "!ACTUAL_SEM_CHECKSUM!" neq "!EXPECTED_SEM_CHECKSUM!" (
+    echo Skipping semantic diff sidecar install ^(checksum mismatch^)
+    goto :sem_cleanup
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Force -Path $env:SEM_ARCHIVE -DestinationPath $env:SEM_EXTRACT"
+if !ERRORLEVEL! neq 0 (
+    echo Skipping semantic diff sidecar install ^(extract failed^)
+    goto :sem_cleanup
+)
+set "EXTRACTED_SEM="
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path $env:SEM_EXTRACT -Filter sem.exe -Recurse -File | Select-Object -First 1 -ExpandProperty FullName"`) do (
+    set "EXTRACTED_SEM=%%i"
+)
+if not defined EXTRACTED_SEM (
+    echo Skipping semantic diff sidecar install ^(binary missing from archive^)
+    goto :sem_cleanup
+)
+
+if not exist "!SEM_DIR!" mkdir "!SEM_DIR!"
+copy /y "!EXTRACTED_SEM!" "!SEM_PATH!" >nul
+if !ERRORLEVEL! equ 0 (
+    echo Semantic diff sidecar installed to !SEM_PATH!
+) else (
+    echo Skipping semantic diff sidecar install ^(copy failed^)
+)
+
+:sem_cleanup
+if exist "!SEM_ARCHIVE!" del "!SEM_ARCHIVE!"
+if exist "!SEM_CHECKSUMS!" del "!SEM_CHECKSUMS!"
+if exist "!SEM_EXTRACT!" rmdir /s /q "!SEM_EXTRACT!"
+goto :eof
 
 REM ======================================================================
 REM Guided-install wizard (called only on interactive first runs or with

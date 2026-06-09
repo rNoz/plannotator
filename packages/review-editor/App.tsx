@@ -14,6 +14,7 @@ import { GitLabIcon } from '@plannotator/ui/components/GitLabIcon';
 import { RepoIcon } from '@plannotator/ui/components/RepoIcon';
 import { PullRequestIcon } from '@plannotator/ui/components/PullRequestIcon';
 import { getPlatformLabel, getMRLabel, getMRNumberLabel, getDisplayRepo } from '@plannotator/shared/pr-types';
+import type { SemanticDiffAdvert } from '@plannotator/shared/semantic-diff-types';
 import { configStore, useConfigValue } from '@plannotator/ui/config';
 import { loadDiffFont } from '@plannotator/ui/utils/diffFonts';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
@@ -73,6 +74,7 @@ import {
   REVIEW_PR_SUMMARY_PANEL_ID,
   REVIEW_PR_COMMENTS_PANEL_ID,
   REVIEW_PR_CHECKS_PANEL_ID,
+  REVIEW_SEMANTIC_DIFF_PANEL_ID,
   REVIEW_ALL_FILES_PANEL_ID,
   REVIEW_CODE_NAV_PANEL_ID,
 } from './dock/reviewPanelTypes';
@@ -98,6 +100,7 @@ interface DiffData {
   prStackInfo?: PRStackInfo | null;
   prDiffScope?: PRDiffScope;
   prDiffScopeOptions?: PRDiffScopeOption[];
+  semanticDiff?: SemanticDiffAdvert;
 }
 
 function getFileTabTitle(filePath: string): string {
@@ -112,6 +115,8 @@ const ReviewApp: React.FC = () => {
   const [annotations, setAnnotations] = useState<CodeAnnotation[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [isAllFilesActive, setIsAllFilesActive] = useState(false);
+  const [isSemanticDiffActive, setIsSemanticDiffActive] = useState(false);
+  const [semanticDiffAvailable, setSemanticDiffAvailable] = useState(false);
   const [isDiffPanelActive, setIsDiffPanelActive] = useState(false);
   const [allFilesVisibleFile, setAllFilesVisibleFile] = useState<string | null>(null);
   const [pendingSelection, setPendingSelection] = useState<SelectedLineRange | null>(null);
@@ -272,6 +277,7 @@ const ReviewApp: React.FC = () => {
   const filesRef = useRef(files);
   filesRef.current = files;
   const needsInitialDiffPanel = useRef(true);
+  const semanticDiffAutoFallbackPending = useRef(false);
 
   // PR context (lifted from sidebar so center dock PR panels can access it)
   const { prContext, isLoading: isPRContextLoading, error: prContextError, fetchContext: fetchPRContext } = usePRContext(prMetadata ?? null);
@@ -281,6 +287,7 @@ const ReviewApp: React.FC = () => {
   const openDiffFile = useCallback((filePath: string) => {
     const file = files.find(candidate => candidate.path === filePath);
     if (!file) return;
+    semanticDiffAutoFallbackPending.current = false;
 
     if (!dockApi) {
       const fileIndex = files.findIndex(candidate => candidate.path === filePath);
@@ -444,7 +451,9 @@ const ReviewApp: React.FC = () => {
       existing.api.setTitle(`References: ${request.symbol}`);
       existing.api.setActive();
     } else {
-      const refPanel = isAllFilesActive
+      const refPanel = isSemanticDiffActive
+        ? REVIEW_SEMANTIC_DIFF_PANEL_ID
+        : isAllFilesActive
         ? REVIEW_ALL_FILES_PANEL_ID
         : REVIEW_DIFF_PANEL_ID;
       dockApi.addPanel({
@@ -455,7 +464,7 @@ const ReviewApp: React.FC = () => {
         initialHeight: 250,
       });
     }
-  }, [codeNav.resolve, dockApi, isAllFilesActive, gitContext, agentCwd]);
+  }, [codeNav.resolve, dockApi, isAllFilesActive, isSemanticDiffActive, gitContext, agentCwd]);
 
   // Check AI capabilities on mount
   useEffect(() => {
@@ -594,8 +603,14 @@ const ReviewApp: React.FC = () => {
 
     // Sync activeFileIndex when user switches between dock tabs
     event.api.onDidActivePanelChange((panel) => {
-      if (!panel) { setIsAllFilesActive(false); setIsDiffPanelActive(false); return; }
+      if (!panel) {
+        setIsAllFilesActive(false);
+        setIsSemanticDiffActive(false);
+        setIsDiffPanelActive(false);
+        return;
+      }
       setIsAllFilesActive(panel.id === REVIEW_ALL_FILES_PANEL_ID);
+      setIsSemanticDiffActive(panel.id === REVIEW_SEMANTIC_DIFF_PANEL_ID);
       setIsDiffPanelActive(isReviewDiffPanelId(panel.id));
       if (!isReviewDiffPanelId(panel.id)) return;
       const filePath = getReviewDiffPanelFilePath(panel.params);
@@ -614,7 +629,10 @@ const ReviewApp: React.FC = () => {
         event.api.totalPanels === 1 && event.api.groups.length === 1
           ? event.api.groups[0]?.panels[0]
           : undefined;
-      const hideHeaders = lonePanel?.id === REVIEW_DIFF_PANEL_ID || lonePanel?.id === REVIEW_ALL_FILES_PANEL_ID;
+      const hideHeaders =
+        lonePanel?.id === REVIEW_DIFF_PANEL_ID ||
+        lonePanel?.id === REVIEW_SEMANTIC_DIFF_PANEL_ID ||
+        lonePanel?.id === REVIEW_ALL_FILES_PANEL_ID;
       for (const group of event.api.groups) {
         group.header.hidden = hideHeaders;
       }
@@ -703,6 +721,7 @@ const ReviewApp: React.FC = () => {
 
   const openAllFilesPanel = useCallback(() => {
     if (!dockApi) return;
+    semanticDiffAutoFallbackPending.current = false;
     const existing = dockApi.getPanel(REVIEW_ALL_FILES_PANEL_ID);
     if (existing) { existing.api.setActive(); return; }
     dockApi.addPanel({
@@ -712,7 +731,59 @@ const ReviewApp: React.FC = () => {
     });
   }, [dockApi]);
 
-  // Open the all-files panel on first load.
+  const openSemanticDiffPanel = useCallback((options?: { autoFallbackOnError?: boolean }) => {
+    if (!dockApi) return;
+    semanticDiffAutoFallbackPending.current = options?.autoFallbackOnError === true;
+    if (!semanticDiffAvailable) {
+      openAllFilesPanel();
+      return;
+    }
+    const existing = dockApi.getPanel(REVIEW_SEMANTIC_DIFF_PANEL_ID);
+    if (existing) { existing.api.setActive(); return; }
+    dockApi.addPanel({
+      id: REVIEW_SEMANTIC_DIFF_PANEL_ID,
+      component: REVIEW_PANEL_TYPES.SEMANTIC_DIFF,
+      title: 'Semantic diff',
+    });
+  }, [dockApi, openAllFilesPanel, semanticDiffAvailable]);
+
+  const handleSemanticDiffUnavailable = useCallback(() => {
+    semanticDiffAutoFallbackPending.current = false;
+    setSemanticDiffAvailable(false);
+    dockApi?.getPanel(REVIEW_SEMANTIC_DIFF_PANEL_ID)?.api.close();
+    openAllFilesPanel();
+  }, [dockApi, openAllFilesPanel]);
+
+  const handleSemanticDiffLoadSuccess = useCallback(() => {
+    semanticDiffAutoFallbackPending.current = false;
+  }, []);
+
+  const handleSemanticDiffLoadError = useCallback(() => {
+    if (!semanticDiffAutoFallbackPending.current) return false;
+    if (dockApi?.activePanel?.id !== REVIEW_SEMANTIC_DIFF_PANEL_ID) {
+      // The user has already moved on; don't steal focus by auto-opening All files.
+      semanticDiffAutoFallbackPending.current = false;
+      return false;
+    }
+    semanticDiffAutoFallbackPending.current = false;
+    dockApi?.getPanel(REVIEW_SEMANTIC_DIFF_PANEL_ID)?.api.close();
+    openAllFilesPanel();
+    return true;
+  }, [dockApi, openAllFilesPanel]);
+
+  const applySemanticDiffAdvert = useCallback((semanticDiff?: SemanticDiffAdvert) => {
+    if (!semanticDiff) return;
+    const available = semanticDiff.available === true;
+    setSemanticDiffAvailable(available);
+    if (!available) {
+      semanticDiffAutoFallbackPending.current = false;
+      dockApi?.getPanel(REVIEW_SEMANTIC_DIFF_PANEL_ID)?.api.close();
+      if (isSemanticDiffActive) openAllFilesPanel();
+    }
+  }, [dockApi, isSemanticDiffActive, openAllFilesPanel]);
+
+  // Open the All files overview on first load. Semantic diff stays available via
+  // the file-tree nav entry, but it's no longer the default landing view.
   useEffect(() => {
     if (!dockApi || !needsInitialDiffPanel.current || files.length === 0) return;
     needsInitialDiffPanel.current = false;
@@ -802,6 +873,7 @@ const ReviewApp: React.FC = () => {
         viewedFiles?: string[];
         error?: string;
         isWSL?: boolean;
+        semanticDiff?: SemanticDiffAdvert;
         serverConfig?: { displayName?: string; gitUser?: string };
       }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
@@ -850,6 +922,7 @@ const ReviewApp: React.FC = () => {
         }
         if (data.error) setDiffError(data.error);
         if (data.isWSL) setIsWSL(true);
+        setSemanticDiffAvailable(data.semanticDiff?.available === true);
         // Mark diff type setup as pending on first run (local mode only)
         if (data.diffType && data.mode !== 'workspace' && !data.prMetadata && data.gitContext && data.gitContext.vcsType !== 'p4' && data.gitContext.vcsType !== 'jj' && needsDiffTypeSetup()) {
           setDiffTypeSetupPending(true);
@@ -865,6 +938,7 @@ const ReviewApp: React.FC = () => {
         });
         setFiles(demoFiles);
         setWorkspaceDiffOptions(null);
+        setSemanticDiffAvailable(false);
       })
       .finally(() => setIsLoading(false));
   }, []);
@@ -1124,6 +1198,7 @@ const ReviewApp: React.FC = () => {
     rawPatch: string; gitRef: string;
     repoInfo?: { display: string; branch?: string };
     viewedFiles?: string[]; error?: string;
+    semanticDiff?: SemanticDiffAdvert;
   }) {
     const isPRSwitch = !!data.prMetadata;
     const nextFiles = parseDiffToFiles(data.rawPatch);
@@ -1151,6 +1226,7 @@ const ReviewApp: React.FC = () => {
       setViewedFiles(data.viewedFiles ? new Set(data.viewedFiles) : new Set());
     }
     setDiffError(data.error || null);
+    applySemanticDiffAdvert(data.semanticDiff);
     resetStagedFiles();
   }
 
@@ -1187,9 +1263,11 @@ const ReviewApp: React.FC = () => {
         gitContext?: GitContext;
         diffOptions?: DiffOption[];
         error?: string;
+        semanticDiff?: SemanticDiffAdvert;
       };
 
       const nextFiles = parseDiffToFiles(data.rawPatch);
+      applySemanticDiffAdvert(data.semanticDiff);
 
       if (options?.preserveFile) {
         // Whitespace toggle: update patch in-place, keep the active file.
@@ -1257,7 +1335,7 @@ const ReviewApp: React.FC = () => {
     } finally {
       setIsLoadingDiff(false);
     }
-  }, [dockApi, resetStagedFiles, selectedBase, diffHideWhitespace, files, activeFileIndex, openDiffFile]);
+  }, [dockApi, resetStagedFiles, selectedBase, diffHideWhitespace, files, activeFileIndex, openDiffFile, applySemanticDiffAdvert]);
 
   // Switch the base branch the current diff compares against.
   // Only triggers a refetch when the active mode actually uses a base.
@@ -1380,6 +1458,7 @@ const ReviewApp: React.FC = () => {
   // Build ReviewState value for dock panel context
   const reviewStateValue = useMemo<ReviewState>(() => ({
     files,
+    rawPatch: diffData?.rawPatch ?? '',
     focusedFileIndex: activeFileIndex,
     focusedFilePath: files[activeFileIndex]?.path ?? null,
     diffStyle,
@@ -1446,13 +1525,18 @@ const ReviewApp: React.FC = () => {
     openDiffFile,
     onAllFilesVisibleFileChange: setAllFilesVisibleFile,
     isAllFilesActive,
+    isSemanticDiffActive,
+    semanticDiffAvailable,
+    onSemanticDiffUnavailable: handleSemanticDiffUnavailable,
+    onSemanticDiffLoadError: handleSemanticDiffLoadError,
+    onSemanticDiffLoadSuccess: handleSemanticDiffLoadSuccess,
     openTourPanel: handleOpenTour,
     onCodeNavRequest: handleCodeNavRequest,
     codeNavResult: codeNav.result,
     codeNavIsLoading: codeNav.isLoading,
     codeNavActiveSymbol: codeNav.activeSymbol,
   }), [
-    files, activeFileIndex, diffStyle, diffOverflow, diffIndicators,
+    files, diffData?.rawPatch, activeFileIndex, diffStyle, diffOverflow, diffIndicators,
     diffLineDiffType, diffShowLineNumbers, diffShowBackground,
     diffExpandUnchanged, diffFontFamily, diffFontSize, activeDiffBase, committedBase, feedbackDiffContext, prReviewScopeLabel, prDiffScope,
     allAnnotations, externalAnnotations,
@@ -1466,7 +1550,8 @@ const ReviewApp: React.FC = () => {
     handleAskAI, handleViewAIResponse, handleClickAIMarker,
     aiHistoryForSelection, agentJobs.jobs, prMetadata, prContext,
     isPRContextLoading, prContextError, fetchPRContext, platformUser, openDiffFile,
-    handleOpenTour, isAllFilesActive, handleAddAnnotationForFile,
+    handleOpenTour, isAllFilesActive, isSemanticDiffActive, semanticDiffAvailable,
+    handleSemanticDiffUnavailable, handleSemanticDiffLoadError, handleSemanticDiffLoadSuccess, handleAddAnnotationForFile,
     handleCodeNavRequest, codeNav.result, codeNav.isLoading, codeNav.activeSymbol,
   ]);
 
@@ -2159,6 +2244,9 @@ const ReviewApp: React.FC = () => {
               <FileTree
                 files={files}
                 activeFileIndex={activeFileIndex}
+                onSelectSemanticDiff={() => openSemanticDiffPanel()}
+                isSemanticDiffActive={isSemanticDiffActive}
+                semanticDiffAvailable={semanticDiffAvailable}
                 onSelectAllFiles={openAllFilesPanel}
                 isAllFilesActive={isAllFilesActive}
                 scrollHighlightIndex={isAllFilesActive && allFilesVisibleFile ? files.findIndex(f => f.path === allFilesVisibleFile) : undefined}
