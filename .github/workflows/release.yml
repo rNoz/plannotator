@@ -149,6 +149,10 @@ jobs:
           name: binaries
           path: artifacts
 
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+
       - name: Smoke-test binary
         if: runner.os != 'Windows'
         env:
@@ -194,6 +198,85 @@ jobs:
             echo "OK: ${label} responded on :${port}${endpoint}"
           }
 
+          smoke_test_agent_terminal() {
+            local port="19502"
+            local data_dir
+            data_dir="$(mktemp -d)"
+
+            PLANNOTATOR_DATA_DIR="$data_dir" "$BINARY" install-runtime agent-terminal
+
+            PLANNOTATOR_DATA_DIR="$data_dir" PLANNOTATOR_PORT="$port" "$BINARY" annotate README.md &
+            local pid=$!
+            local ok=0
+
+            for _ in $(seq 1 60); do
+              if curl -sf "http://127.0.0.1:${port}/api/plan" -o /dev/null 2>/dev/null; then
+                ok=1
+                break
+              fi
+              sleep 0.5
+            done
+
+            if [ "$ok" = "0" ]; then
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+              echo "FAIL: plannotator annotate terminal did not respond on :${port}/api/plan"
+              exit 1
+            fi
+
+            local runtime_dir="${data_dir}/vendor/agent-terminal/webtui-0.1.0"
+            local smoke_script="${runtime_dir}/terminal-smoke.mjs"
+            cat > "$smoke_script" <<'NODE'
+          import WebSocket from "ws";
+
+          const base = process.env.PLANNOTATOR_SMOKE_URL;
+          const plan = await fetch(`${base}/api/plan`).then((res) => res.json());
+          const terminal = plan.agentTerminal;
+          if (!terminal?.enabled) {
+            throw new Error(`agent terminal disabled: ${JSON.stringify(terminal)}`);
+          }
+          if (!terminal.wsPath?.startsWith("/api/agent-terminal/pty/")) {
+            throw new Error(`agent terminal returned non-tokenized path: ${terminal.wsPath}`);
+          }
+
+          await new Promise((resolve, reject) => {
+            let ws;
+            const timer = setTimeout(() => {
+              ws?.close();
+              reject(new Error("timed out waiting for terminal response"));
+            }, 5000);
+            ws = new WebSocket(`${base.replace(/^http/, "ws")}${terminal.wsPath}`);
+            ws.on("open", () => {
+              ws.send(JSON.stringify({ type: "spawn", requestId: "missing-agent", options: {} }));
+            });
+            ws.on("message", (raw) => {
+              clearTimeout(timer);
+              ws.close();
+              const message = JSON.parse(String(raw));
+              if (message.type !== "error" || message.message !== "Agent terminal requires a built-in WebTUI agent.") {
+                reject(new Error(`unexpected terminal response: ${JSON.stringify(message)}`));
+                return;
+              }
+              resolve();
+            });
+            ws.on("error", (err) => {
+              clearTimeout(timer);
+              reject(err);
+            });
+          });
+          NODE
+
+            local result=0
+            (cd "$runtime_dir" && PLANNOTATOR_SMOKE_URL="http://127.0.0.1:${port}" node "$smoke_script") || result=$?
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            if [ "$result" != "0" ]; then
+              exit "$result"
+            fi
+
+            echo "OK: plannotator annotate terminal WebSocket reached sidecar"
+          }
+
           # 2. review: exercises server startup, bundled HTML, git diff, and HTTP.
           smoke_test_server "plannotator review" 19500 "/api/diff" \
             "$BINARY" review
@@ -201,6 +284,9 @@ jobs:
           # 3. annotate: exercises annotate server startup with a real file.
           smoke_test_server "plannotator annotate" 19501 "/api/plan" \
             "$BINARY" annotate README.md
+
+          # 4. terminal: exercises managed WebTUI runtime + compiled sidecar import.
+          smoke_test_agent_terminal
 
       - name: Smoke-test binary
         if: runner.os == 'Windows'
@@ -275,11 +361,115 @@ jobs:
             Write-Host "OK: $Label responded on :$Port$Endpoint"
           }
 
+          function Test-AgentTerminal {
+            $port = "19502"
+            $dataDir = Join-Path ([System.IO.Path]::GetTempPath()) "plannotator-terminal-$([System.Guid]::NewGuid().ToString('N'))"
+            New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+
+            $env:PLANNOTATOR_DATA_DIR = $dataDir
+            & $binary install-runtime agent-terminal
+            if ($LASTEXITCODE -ne 0) {
+              throw "FAIL: install-runtime agent-terminal failed"
+            }
+
+            $env:PLANNOTATOR_PORT = $port
+            $stdout = New-TemporaryFile
+            $stderr = New-TemporaryFile
+            $process = Start-Process `
+              -FilePath $binary `
+              -ArgumentList @("annotate", "README.md") `
+              -PassThru `
+              -NoNewWindow `
+              -RedirectStandardOutput $stdout `
+              -RedirectStandardError $stderr
+
+            try {
+              $ok = $false
+              for ($i = 0; $i -lt 60; $i++) {
+                try {
+                  Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/plan" -UseBasicParsing -TimeoutSec 1 | Out-Null
+                  $ok = $true
+                  break
+                } catch {
+                  if ($process.HasExited) {
+                    break
+                  }
+                  Start-Sleep -Milliseconds 500
+                }
+              }
+
+              if (-not $ok) {
+                throw "FAIL: plannotator annotate terminal did not respond on :$Port/api/plan"
+              }
+
+              $runtimeDir = Join-Path $dataDir "vendor\agent-terminal\webtui-0.1.0"
+              $smokeScript = Join-Path $runtimeDir "terminal-smoke.mjs"
+              Set-Content -Path $smokeScript -Encoding UTF8 -Value @'
+          import WebSocket from "ws";
+
+          const base = process.env.PLANNOTATOR_SMOKE_URL;
+          const plan = await fetch(`${base}/api/plan`).then((res) => res.json());
+          const terminal = plan.agentTerminal;
+          if (!terminal?.enabled) {
+            throw new Error(`agent terminal disabled: ${JSON.stringify(terminal)}`);
+          }
+          if (!terminal.wsPath?.startsWith("/api/agent-terminal/pty/")) {
+            throw new Error(`agent terminal returned non-tokenized path: ${terminal.wsPath}`);
+          }
+
+          await new Promise((resolve, reject) => {
+            let ws;
+            const timer = setTimeout(() => {
+              ws?.close();
+              reject(new Error("timed out waiting for terminal response"));
+            }, 5000);
+            ws = new WebSocket(`${base.replace(/^http/, "ws")}${terminal.wsPath}`);
+            ws.on("open", () => {
+              ws.send(JSON.stringify({ type: "spawn", requestId: "missing-agent", options: {} }));
+            });
+            ws.on("message", (raw) => {
+              clearTimeout(timer);
+              ws.close();
+              const message = JSON.parse(String(raw));
+              if (message.type !== "error" || message.message !== "Agent terminal requires a built-in WebTUI agent.") {
+                reject(new Error(`unexpected terminal response: ${JSON.stringify(message)}`));
+                return;
+              }
+              resolve();
+            });
+            ws.on("error", (err) => {
+              clearTimeout(timer);
+              reject(err);
+            });
+          });
+          '@
+              Push-Location $runtimeDir
+              try {
+                $env:PLANNOTATOR_SMOKE_URL = "http://127.0.0.1:$Port"
+                node $smokeScript
+              } finally {
+                Pop-Location
+                Remove-Item Env:\PLANNOTATOR_SMOKE_URL -ErrorAction SilentlyContinue
+              }
+              Write-Host "OK: plannotator annotate terminal WebSocket reached sidecar"
+            } finally {
+              if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force
+                Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+              }
+              Remove-Item Env:\PLANNOTATOR_PORT -ErrorAction SilentlyContinue
+              Remove-Item Env:\PLANNOTATOR_DATA_DIR -ErrorAction SilentlyContinue
+            }
+          }
+
           # 2. review: exercises server startup, bundled HTML, git diff, and HTTP.
           Test-PlannotatorServer "plannotator review" "19500" "/api/diff" @("review")
 
           # 3. annotate: exercises annotate server startup with a real file.
           Test-PlannotatorServer "plannotator annotate" "19501" "/api/plan" @("annotate", "README.md")
+
+          # 4. terminal: exercises managed WebTUI runtime + compiled sidecar import.
+          Test-AgentTerminal
 
   pi-extension-ai-runtime-windows:
     needs: test

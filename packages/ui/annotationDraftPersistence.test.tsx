@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { useAnnotationDraft, type DraftEditedDocument, type DraftSavedFileChange } from './hooks/useAnnotationDraft';
 import { AnnotationType, type Annotation } from './types';
-import { saveDraft, loadDraft, deleteDraft, contentHash } from '../shared/draft';
+import { saveDraft, loadDraft, deleteDraft, contentHash, getDraftGeneration } from '../shared/draft';
 
 const hasDom = typeof document !== 'undefined';
 
@@ -109,19 +109,28 @@ function installFetchShim() {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.startsWith('/api/draft')) {
+      const parsedUrl = new URL(url, 'http://localhost');
       const method = init?.method ?? 'GET';
       if (method === 'GET') {
         const data = loadDraft(DRAFT_KEY);
         return data
           ? new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } })
-          : new Response('Not found', { status: 404 });
+          : new Response(
+              JSON.stringify({
+                found: false,
+                ...(getDraftGeneration(DRAFT_KEY) !== null ? { draftGeneration: getDraftGeneration(DRAFT_KEY) } : {}),
+              }),
+              { status: 404, headers: { 'Content-Type': 'application/json' } },
+            );
       }
       if (method === 'POST') {
         saveDraft(DRAFT_KEY, JSON.parse(String(init?.body)));
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (method === 'DELETE') {
-        deleteDraft(DRAFT_KEY);
+        const rawGeneration = parsedUrl.searchParams.get('generation');
+        const generation = rawGeneration === null ? undefined : Number(rawGeneration);
+        deleteDraft(DRAFT_KEY, Number.isFinite(generation) && generation >= 0 ? generation : undefined);
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
     }
@@ -491,6 +500,55 @@ describe('direct-edit draft persistence', () => {
     }));
     await tick(DEBOUNCE_WAIT_MS);
     expect(loadDraft(DRAFT_KEY)).toBeNull();
+    await session.unmount();
+  });
+
+  test.skipIf(!hasDom)('fresh session after a tombstone saves with a newer draft generation', async () => {
+    deleteDraft(DRAFT_KEY, 2);
+
+    const session = await mountSession(options({
+      annotations: [ANNOTATION],
+      getEditedMarkdown: () => EDITED,
+    }));
+    expect(session.result.current!.getDraftGeneration()).toBeGreaterThan(2);
+    act(() => session.result.current!.scheduleDraftSave());
+    await tick(DEBOUNCE_WAIT_MS);
+
+    const onDisk = loadDraft(DRAFT_KEY) as Record<string, unknown> | null;
+    expect(onDisk).not.toBeNull();
+    expect(onDisk!.draftGeneration).toBeGreaterThan(2);
+    expect(onDisk!.annotations).toEqual([ANNOTATION]);
+    await session.unmount();
+  });
+
+  test.skipIf(!hasDom)('restored generated drafts continue saving with newer generations', async () => {
+    const original = { ...ANNOTATION, text: 'old note' };
+    const updated = { ...ANNOTATION, text: 'updated note' };
+    deleteDraft(DRAFT_KEY, 2);
+    saveDraft(DRAFT_KEY, {
+      annotations: [original],
+      globalAttachments: [],
+      draftGeneration: 3,
+      ts: Date.now(),
+    });
+
+    const session = await mountSession(options());
+    expect(session.result.current!.draftBanner).toEqual({
+      count: 1,
+      timeAgo: 'just now',
+      hasEdits: false,
+    });
+    act(() => {
+      session.result.current!.restoreDraft();
+    });
+    await session.rerender(options({ annotations: [updated] }));
+    act(() => session.result.current!.scheduleDraftSave());
+    await tick(DEBOUNCE_WAIT_MS);
+
+    const onDisk = loadDraft(DRAFT_KEY) as Record<string, unknown> | null;
+    expect(onDisk).not.toBeNull();
+    expect(onDisk!.draftGeneration).toBeGreaterThan(3);
+    expect(onDisk!.annotations).toEqual([updated]);
     await session.unmount();
   });
 });

@@ -14,7 +14,7 @@
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { getRepoInfo } from "./repo";
 import type { Origin } from "@plannotator/shared/agents";
-import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, handleSaveNotes } from "./shared-handlers";
+import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc } from "./reference-handlers";
 import { handleFileBrowserFilesStream } from "./reference-watch";
 import { resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
@@ -39,6 +39,8 @@ import { handleOpenInApps, handleOpenIn } from "./open-in";
 import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
 import type { AIEndpoints } from "@plannotator/ai";
 import { createHtmlAssetRegistry } from "./html-assets";
+import { createBunAgentTerminalBridge } from "./agent-terminal";
+import { isAgentTerminalWsRoute, supportsAnnotateAgentTerminalMode } from "@plannotator/shared/agent-terminal";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -87,6 +89,8 @@ export interface AnnotateServerOptions {
   /** Session-level force-markdown preference (`--markdown`). Exposed in /api/plan so the
    *  frontend appends `&convert=1` when navigating folder/linked HTML files. */
   convertHtml?: boolean;
+  /** CWD where the optional annotate agent terminal should launch. Defaults to process.cwd(). */
+  agentCwd?: string;
   /** Called when server starts with the URL, remote status, and port */
   onReady?: (url: string, isRemote: boolean, port: number) => void;
 }
@@ -147,6 +151,7 @@ export async function startAnnotateServer(
     rawHtml,
     renderHtml = false,
     convertHtml = false,
+    agentCwd,
     onReady,
   } = options;
 
@@ -162,6 +167,10 @@ export async function startAnnotateServer(
   const externalAnnotations = createExternalAnnotationHandler("plan");
   const aiRuntime = await createAIRuntime();
   const htmlAssets = createHtmlAssetRegistry();
+  const agentTerminal = await createBunAgentTerminalBridge({
+    enabled: supportsAnnotateAgentTerminalMode(mode),
+    cwd: agentCwd ?? process.cwd(),
+  });
 
   async function loadShareHtml(pathParam: string | null): Promise<Response> {
     if (/^https?:\/\//i.test(filePath)) {
@@ -298,6 +307,16 @@ export async function startAnnotateServer(
         async fetch(req, server) {
           const url = new URL(req.url);
 
+          if (agentTerminal.matches(url.pathname)) {
+            if (agentTerminal.capability.enabled && agentTerminal.upgrade(req, server)) {
+              return;
+            }
+            return new Response("Agent terminal is unavailable", { status: 404 });
+          }
+          if (isAgentTerminalWsRoute(url.pathname)) {
+            return new Response("Agent terminal is unavailable", { status: 404 });
+          }
+
           // API: Get plan content (reuse /api/plan so the plan editor UI works)
           if (url.pathname === "/api/plan" && req.method === "GET") {
             const displayRawHtml = renderHtml && rawHtml ? htmlAssets.rewriteHtml(rawHtml, filePath) : undefined;
@@ -321,6 +340,7 @@ export async function startAnnotateServer(
               projectRoot: folderPath || process.cwd(),
               isWSL: wslFlag,
               serverConfig: getServerConfig(gitUser),
+              agentTerminal: agentTerminal.capability,
               ...(recentMessages ? { recentMessages } : {}),
             });
           }
@@ -504,7 +524,7 @@ export async function startAnnotateServer(
           // API: Annotation draft persistence
           if (url.pathname === "/api/draft") {
             if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
+            if (req.method === "DELETE") return handleDraftDelete(draftKey, req);
             return handleDraftLoad(draftKey);
           }
 
@@ -527,14 +547,14 @@ export async function startAnnotateServer(
 
           // API: Exit annotation session without feedback
           if (url.pathname === "/api/exit" && req.method === "POST") {
-            deleteDraft(draftKey);
+            deleteDraft(draftKey, readDraftGenerationFromUrl(req));
             resolveDecision({ feedback: "", annotations: [], exit: true });
             return Response.json({ ok: true });
           }
 
           // API: Approve the annotation session (review-gate UX)
           if (url.pathname === "/api/approve" && req.method === "POST") {
-            deleteDraft(draftKey);
+            deleteDraft(draftKey, readDraftGenerationFromUrl(req));
             resolveDecision({ feedback: "", annotations: [], approved: true });
             return Response.json({ ok: true });
           }
@@ -547,9 +567,10 @@ export async function startAnnotateServer(
                 annotations: unknown[];
                 selectedMessageId?: string;
                 feedbackScope?: "message" | "messages";
+                draftGeneration?: number;
               };
 
-              deleteDraft(draftKey);
+              deleteDraft(draftKey, readDraftGenerationFromBody(body));
               resolveDecision({
                 feedback: body.feedback || "",
                 annotations: body.annotations || [],
@@ -580,6 +601,7 @@ export async function startAnnotateServer(
             headers: { "Content-Type": "text/html" },
           });
         },
+        websocket: agentTerminal.websocket,
 
         error(err) {
           console.error("[plannotator] Server error:", err);
@@ -632,6 +654,7 @@ export async function startAnnotateServer(
     waitForDecision: () => decisionPromise,
     stop: () => {
       aiRuntime.dispose();
+      agentTerminal.dispose();
       server.stop();
     },
   };

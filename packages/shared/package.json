@@ -32,6 +32,7 @@
     "./extract-code-paths": "./extract-code-paths.ts",
     "./external-annotation": "./external-annotation.ts",
     "./agent-jobs": "./agent-jobs.ts",
+    "./agent-terminal": "./agent-terminal.ts",
     "./config": "./config.ts",
     "./data-dir": "./data-dir.ts",
     "./prompts": "./prompts.ts",

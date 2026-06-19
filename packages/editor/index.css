@@ -1,6 +1,7 @@
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/geist-mono";
 @import "tailwindcss";
+@import "@plannotator/webtui/styles.css";
 
 @plugin "tailwindcss-animate";
 
@@ -11,6 +12,33 @@
 @source "./components/**/*.tsx";
 
 @import "../ui/theme.css";
+
+/* Keep xterm's scrollback layer aligned with the host app terminal palette. */
+[data-annotate-agent-terminal="true"] .webtui-shell {
+  background-color: var(--webtui-background) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+[data-annotate-agent-terminal="true"] .webtui-terminal,
+[data-annotate-agent-terminal="true"] .xterm,
+[data-annotate-agent-terminal="true"] .xterm-screen {
+  background-color: var(--webtui-background) !important;
+}
+
+[data-annotate-agent-terminal="true"] .webtui-shell .xterm-viewport {
+  background-color: var(--webtui-background) !important;
+  scrollbar-width: none;
+}
+
+[data-annotate-agent-terminal="true"] .webtui-shell .xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+[data-annotate-agent-terminal="true"] .webtui-shell .xterm-scrollbar {
+  display: none !important;
+  width: 0 !important;
+}
 
 /* Code blocks */
 pre code.hljs {

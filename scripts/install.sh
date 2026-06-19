@@ -87,6 +87,11 @@ installed after Plannotator itself. Skip it by exporting
 PLANNOTATOR_SKIP_SEM_INSTALL=1. Its download is time-bounded, so a slow network
 never blocks an otherwise-complete install.
 
+The optional annotate agent terminal runtime is installed after Plannotator
+itself. Skip it by exporting PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL=1. If
+Node/npm is unavailable, Plannotator still installs and annotate mode works
+without the integrated terminal.
+
 Examples:
   curl -fsSL https://plannotator.ai/install.sh | bash
   curl -fsSL https://plannotator.ai/install.sh | bash -s -- --version vX.Y.Z
@@ -475,7 +480,21 @@ install_sem_sidecar() {
     echo "Semantic diff sidecar installed to ${sem_bin}"
 }
 
+install_agent_terminal_runtime() {
+    case "${PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL:-}" in
+        1|true|yes|TRUE|YES|True|Yes)
+            echo "Skipping agent terminal runtime install (PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL is set)"
+            return 0
+            ;;
+    esac
+
+    if ! "$INSTALL_DIR/plannotator" install-runtime agent-terminal; then
+        echo "Skipping agent terminal runtime install (plannotator install-runtime failed)"
+    fi
+}
+
 install_sem_sidecar
+install_agent_terminal_runtime
 
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
     echo ""

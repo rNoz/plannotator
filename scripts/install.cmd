@@ -389,6 +389,7 @@ echo.
 echo plannotator !TAG! installed to !INSTALL_PATH!
 
 call :InstallSemSidecar
+call :InstallAgentTerminalRuntime
 
 REM Check if install directory is in PATH
 echo !PATH! | findstr /i /c:"!INSTALL_DIR!" >nul
@@ -957,6 +958,30 @@ if exist "!PLUGIN_HOOKS!" if exist "!CLAUDE_SETTINGS!" (
 
 echo.
 exit /b 0
+
+REM ======================================================================
+REM Optional annotate agent terminal runtime install. Non-fatal: Plannotator
+REM remains installed if Node/npm or npm install is unavailable.
+REM ======================================================================
+:InstallAgentTerminalRuntime
+if /i "!PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL!"=="1" (
+    echo Skipping agent terminal runtime install ^(PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL is set^)
+    goto :eof
+)
+if /i "!PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL!"=="true" (
+    echo Skipping agent terminal runtime install ^(PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL is set^)
+    goto :eof
+)
+if /i "!PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL!"=="yes" (
+    echo Skipping agent terminal runtime install ^(PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL is set^)
+    goto :eof
+)
+
+"!INSTALL_PATH!" install-runtime agent-terminal
+if !ERRORLEVEL! neq 0 (
+    echo Skipping agent terminal runtime install ^(plannotator install-runtime failed^)
+)
+goto :eof
 
 REM ======================================================================
 REM Optional semantic diff sidecar install. Non-fatal: Plannotator remains

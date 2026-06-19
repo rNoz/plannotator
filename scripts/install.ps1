@@ -177,6 +177,23 @@ function Install-SemSidecar {
     }
 }
 
+function Install-AgentTerminalRuntime {
+    if ($env:PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL -match '^(1|true|yes)$') {
+        Write-Host "Skipping agent terminal runtime install (PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL is set)"
+        return
+    }
+
+    $plannotatorPath = Join-Path $installDir "plannotator.exe"
+    try {
+        & $plannotatorPath install-runtime agent-terminal
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Skipping agent terminal runtime install (plannotator install-runtime failed)"
+        }
+    } catch {
+        Write-Host "Skipping agent terminal runtime install ($($_.Exception.Message))"
+    }
+}
+
 $configPath = Join-Path $configDir "config.json"
 if (Test-Path $configPath) {
     try {
@@ -314,6 +331,7 @@ Write-Host ""
 Write-Host "plannotator $latestTag installed to $installDir\plannotator.exe"
 
 Install-SemSidecar
+Install-AgentTerminalRuntime
 
 # Add to PATH if not already there
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

@@ -145,9 +145,41 @@
       0 0 0 1px var(--card-ring), 0 1px 3px 0 rgba(0, 0, 0, 0.2), 0 2px 8px -2px rgba(0, 0, 0, 0.3);
   }
 
+  html {
+    --terminal-background: var(--card);
+    --terminal-foreground: var(--foreground);
+    --terminal-cursor: var(--primary);
+    --terminal-cursor-accent: var(--terminal-background);
+    --terminal-selection-background: color-mix(in oklab, var(--primary) 32%, var(--terminal-background));
+    --terminal-selection-foreground: var(--foreground);
+    --terminal-selection-inactive-background: var(--border);
+    --terminal-black: var(--terminal-background);
+    --terminal-red: var(--destructive);
+    --terminal-green: var(--success);
+    --terminal-yellow: var(--warning);
+    --terminal-blue: var(--primary);
+    --terminal-magenta: var(--accent);
+    --terminal-cyan: var(--secondary);
+    --terminal-white: var(--foreground);
+    --terminal-bright-black: var(--muted-foreground);
+    --terminal-bright-red: color-mix(in oklab, var(--destructive) 80%, white);
+    --terminal-bright-green: color-mix(in oklab, var(--success) 80%, white);
+    --terminal-bright-yellow: color-mix(in oklab, var(--warning) 80%, white);
+    --terminal-bright-blue: color-mix(in oklab, var(--primary) 80%, white);
+    --terminal-bright-magenta: color-mix(in oklab, var(--accent) 80%, white);
+    --terminal-bright-cyan: color-mix(in oklab, var(--secondary) 80%, white);
+    --terminal-bright-white: var(--foreground);
+  }
+
   .light {
     --warning: oklch(0.55 0.18 85);
     --warning-foreground: oklch(0.18 0.02 260);
+    --terminal-bright-red: color-mix(in oklab, var(--destructive) 84%, black);
+    --terminal-bright-green: color-mix(in oklab, var(--success) 84%, black);
+    --terminal-bright-yellow: color-mix(in oklab, var(--warning) 84%, black);
+    --terminal-bright-blue: color-mix(in oklab, var(--primary) 84%, black);
+    --terminal-bright-magenta: color-mix(in oklab, var(--accent) 84%, black);
+    --terminal-bright-cyan: color-mix(in oklab, var(--secondary) 84%, black);
     --card-ring: rgba(0, 0, 0, 0.06);
     --card-shadow:
       0 0 0 1px var(--card-ring), 0 1px 3px 0 rgba(0, 0, 0, 0.04),

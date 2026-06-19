@@ -10,10 +10,28 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { openBrowser as openBrowserImpl } from "./browser";
 import { validateImagePath, validateUploadExtension, UPLOAD_DIR } from "./image";
-import { saveDraft, loadDraft, deleteDraft } from "./draft";
+import { saveDraft, loadDraft, deleteDraft, getDraftGeneration } from "./draft";
 import { FAVICON_SVG } from "@plannotator/shared/favicon";
 import { saveToObsidian, saveToBear, saveToOctarine } from "./integrations";
 import type { ObsidianConfig, BearConfig, OctarineConfig, IntegrationResult } from "./integrations";
+
+function normalizeDraftGeneration(value: unknown): number | undefined {
+  if (typeof value !== "number") return undefined;
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function readDraftGenerationFromUrl(req: Request): number | undefined {
+  const url = new URL(req.url);
+  const raw = url.searchParams.get("generation") ?? url.searchParams.get("draftGeneration");
+  if (raw === null) return undefined;
+  const value = Number(raw);
+  return normalizeDraftGeneration(value);
+}
+
+export function readDraftGenerationFromBody(body: unknown): number | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  return normalizeDraftGeneration((body as { draftGeneration?: unknown }).draftGeneration);
+}
 
 /** Serve images from local paths or temp uploads. Used by all 3 servers. */
 export async function handleImage(req: Request): Promise<Response> {
@@ -118,14 +136,18 @@ export async function handleDraftSave(req: Request, contentKey: string): Promise
 export function handleDraftLoad(contentKey: string): Response {
   const draft = loadDraft(contentKey);
   if (!draft) {
-    return Response.json({ found: false }, { status: 404 });
+    const draftGeneration = getDraftGeneration(contentKey);
+    return Response.json(
+      { found: false, ...(draftGeneration !== null ? { draftGeneration } : {}) },
+      { status: 404 },
+    );
   }
   return Response.json(draft);
 }
 
 /** Delete annotation draft. Used by all 3 servers. */
-export function handleDraftDelete(contentKey: string): Response {
-  deleteDraft(contentKey);
+export function handleDraftDelete(contentKey: string, req?: Request): Response {
+  deleteDraft(contentKey, req ? readDraftGenerationFromUrl(req) : undefined);
   return Response.json({ ok: true });
 }
 

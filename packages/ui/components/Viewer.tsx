@@ -33,7 +33,7 @@ class ToolbarErrorBoundary extends React.Component<
   }
 }
 
-import { CommentPopover, type CommentAskAIContext } from './CommentPopover';
+import { CommentPopover, type CommentAskAIContext, type CommentAskAIHandler } from './CommentPopover';
 import { TaterSpriteSitting } from './TaterSpriteSitting';
 import { AttachmentsButton } from './AttachmentsButton';
 import { MessagesIcon } from './icons/MessagesIcon';
@@ -108,7 +108,7 @@ interface ViewerProps {
   // Checkbox toggle props
   onToggleCheckbox?: (blockId: string, checked: boolean) => void;
   checkboxOverrides?: Map<string, boolean>;
-  onAskAI?: (question: string, context: CommentAskAIContext) => void;
+  onAskAI?: CommentAskAIHandler;
 }
 
 export interface ViewerHandle {

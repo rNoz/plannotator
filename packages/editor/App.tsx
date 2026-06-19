@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { toast, Toaster } from 'sonner';
 import { type Origin, getAgentName } from '@plannotator/shared/agents';
+import { annotateFileFeedback, annotateMessageFeedback } from '@plannotator/shared/feedback-templates';
 import { parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, exportEditorAnnotations, exportCodeFileAnnotations, exportMessageAnnotations, extractFrontmatter, wrapFeedbackForAgent, Frontmatter, type LinkedDocAnnotationEntry, type MessageAnnotationEntry } from '@plannotator/ui/utils/parser';
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { HtmlViewer } from '@plannotator/ui/components/html-viewer';
@@ -39,10 +40,11 @@ import {
   resolveAIModelForProvider,
   resolveAIProviderSelection,
   saveAIProviderSelection,
+  type AIProviderOption,
 } from '@plannotator/ui/utils/aiProvider';
 import { markPlanAIAnnouncementSeen, needsPlanAIAnnouncement } from '@plannotator/ui/utils/planAIAnnouncement';
 import { markLookAndFeelAnnouncementSeen, needsLookAndFeelAnnouncement } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
-import { useAIChat } from '@plannotator/ui/hooks/useAIChat';
+import { buildDefaultPrompt, useAIChat } from '@plannotator/ui/hooks/useAIChat';
 import { getUIPreferences, type UIPreferences, type PlanWidth } from '@plannotator/ui/utils/uiPreferences';
 import { getEditorMode, saveEditorMode } from '@plannotator/ui/utils/editorMode';
 import { getInputMethod, saveInputMethod } from '@plannotator/ui/utils/inputMethod';
@@ -97,6 +99,7 @@ import {
   type SourceSaveCapability,
   type SourceSaveResponse,
 } from '@plannotator/shared/source-save';
+import type { AgentTerminalCapability } from '@plannotator/shared/agent-terminal';
 // Demo content toggle. Default: the original Real-time Collaboration plan.
 // Opt-in diff-engine stress test: `VITE_DIFF_DEMO=1 bun run dev:hook` swaps
 // in the 20-case Auth Service Refactor test plan. dev-mock-api.ts reads the
@@ -112,6 +115,18 @@ const DEMO_PLAN_CONTENT = USE_DIFF_DEMO
   : DEFAULT_DEMO_PLAN_CONTENT;
 import { useCheckboxOverrides } from './hooks/useCheckboxOverrides';
 import { AppHeader } from './components/AppHeader';
+import {
+  AnnotateAgentTerminalPanel,
+  type AnnotateAgentTerminalPanelHandle,
+} from './components/AnnotateAgentTerminalPanel';
+import {
+  buildAgentTerminalDeliveryRecord,
+  buildTerminalAskPrompt,
+  isMatchingAgentTerminalDelivery,
+  shouldSendAgentTerminalFeedback,
+  type AgentTerminalDeliveryRecord,
+  type AnnotateFeedbackTarget,
+} from './agentTerminalIntegration';
 import {
   buildPlanEditPanelItem,
   buildDirectEditsSection,
@@ -322,6 +337,7 @@ const App: React.FC = () => {
   const [editorDirty, setEditorDirty] = useState(false);
   // True while the open editor buffer differs from the as-submitted baseline.
   const [editorDiffersFromBaseline, setEditorDiffersFromBaseline] = useState(false);
+  const [agentFeedbackRevision, setAgentFeedbackRevision] = useState(0);
   // Two-step guard for the "Cancel" (discard edits + exit) action.
   const [confirmCancelEdits, setConfirmCancelEdits] = useState(false);
   const originalMarkdownRef = useRef<string | null>(null);
@@ -377,6 +393,15 @@ const App: React.FC = () => {
   const [pasteApiUrl, setPasteApiUrl] = useState<string | undefined>(undefined);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string; host?: string } | null>(null);
   const [projectRoot, setProjectRoot] = useState<string | null>(null);
+  const [agentTerminalCapability, setAgentTerminalCapability] = useState<AgentTerminalCapability | null>(null);
+  const [isAgentTerminalOpen, setIsAgentTerminalOpen] = useState(false);
+  const [isAgentTerminalRunning, setIsAgentTerminalRunning] = useState(false);
+  const [isAgentTerminalReady, setIsAgentTerminalReady] = useState(false);
+  const [agentTerminalSessionId, setAgentTerminalSessionId] = useState<number | null>(null);
+  const [agentTerminalDelivery, setAgentTerminalDeliveryState] = useState<AgentTerminalDeliveryRecord | null>(null);
+  const agentTerminalDeliveryRef = useRef<AgentTerminalDeliveryRecord | null>(null);
+  const agentTerminalSessionSeqRef = useRef(0);
+  const agentTerminalRef = useRef<AnnotateAgentTerminalPanelHandle>(null);
   const [wideModeType, setWideModeType] = useState<WideModeType | null>(null);
   const wideModeSnapshotRef = useRef<WideModeLayoutSnapshot | null>(null);
   const initialSidebarPreferenceAppliedRef = useRef(false);
@@ -441,7 +466,16 @@ const App: React.FC = () => {
     // Render-free drag: write the live width to a :root var the panel reads.
     apply: (w) => document.documentElement.style.setProperty('--toc-w', `${w}px`),
   });
-  const isResizing = panelResize.isDragging || tocResize.isDragging;
+  const agentTerminalResize = useResizablePanel({
+    storageKey: 'plannotator-agent-terminal-width',
+    defaultWidth: 360,
+    minWidth: 280,
+    maxWidth: 640,
+    side: 'left',
+    onSnapClose: () => setIsAgentTerminalOpen(false),
+    apply: (w) => document.documentElement.style.setProperty('--agent-terminal-w', `${w}px`),
+  });
+  const isResizing = panelResize.isDragging || tocResize.isDragging || agentTerminalResize.isDragging;
 
   // Whether the document has any TOC-eligible headings (level <= 3, matching
   // buildTocHierarchy). Drives the empty-doc auto-close behavior below — must
@@ -526,6 +560,58 @@ const App: React.FC = () => {
     setRightSidebarTab('ai');
     setIsPanelOpen(prev => rightSidebarTab === 'ai' ? !prev : true);
   }, [dismissPlanAIAnnouncement, exitWideMode, rightSidebarTab, wideModeType]);
+
+  const hideAgentTerminal = useCallback(() => {
+    setIsAgentTerminalOpen(false);
+  }, []);
+
+  const setAgentTerminalDelivery = useCallback((delivery: AgentTerminalDeliveryRecord | null) => {
+    agentTerminalDeliveryRef.current = delivery;
+    setAgentTerminalDeliveryState(delivery);
+  }, []);
+
+  const closeAgentTerminal = useCallback(() => {
+    if (agentTerminalRef.current) {
+      agentTerminalRef.current.stop();
+      return;
+    }
+    setIsAgentTerminalRunning(false);
+    setIsAgentTerminalReady(false);
+    setAgentTerminalSessionId(null);
+    setAgentTerminalDelivery(null);
+    hideAgentTerminal();
+  }, [hideAgentTerminal, setAgentTerminalDelivery]);
+
+  const handleAgentTerminalReadyChange = useCallback((ready: boolean) => {
+    setIsAgentTerminalReady(ready);
+    setAgentTerminalDelivery(null);
+    if (!ready) {
+      setAgentTerminalSessionId(null);
+      return;
+    }
+    agentTerminalSessionSeqRef.current += 1;
+    setAgentTerminalSessionId(agentTerminalSessionSeqRef.current);
+  }, [setAgentTerminalDelivery]);
+
+  const openAgentTerminal = useCallback(() => {
+    if (wideModeType !== null) {
+      exitWideMode({ restore: false, panelOpen: false });
+    }
+    setIsAgentTerminalOpen(true);
+  }, [exitWideMode, wideModeType]);
+
+  const toggleAgentTerminal = useCallback(() => {
+    if (isAgentTerminalOpen) {
+      hideAgentTerminal();
+      return;
+    }
+    openAgentTerminal();
+  }, [hideAgentTerminal, isAgentTerminalOpen, openAgentTerminal]);
+
+  useEffect(() => {
+    if (annotateMode && annotateSource !== 'message' && agentTerminalCapability) return;
+    closeAgentTerminal();
+  }, [agentTerminalCapability, annotateMode, annotateSource, closeAgentTerminal]);
 
   // Sync sidebar open state when the "Auto-open Sidebar" preference changes in
   // Settings. Deliberately does NOT react to the document or render mode —
@@ -707,10 +793,11 @@ const App: React.FC = () => {
         panelOpen: isPanelOpen,
       };
     }
+    if (isAgentTerminalOpen) hideAgentTerminal();
     setWideModeType(type);
     sidebar.close();
     setIsPanelOpen(false);
-  }, [canUseWideMode, isPanelOpen, wideModeType, sidebar.activeTab, sidebar.close, sidebar.isOpen]);
+  }, [canUseWideMode, hideAgentTerminal, isAgentTerminalOpen, isPanelOpen, wideModeType, sidebar.activeTab, sidebar.close, sidebar.isOpen]);
 
   const toggleViewMode = useCallback((type: WideModeType) => {
     if (wideModeType === type) {
@@ -1107,6 +1194,67 @@ const App: React.FC = () => {
       editorAnnotations.length +
       linkedDocHook.docAnnotationCount +
       globalAttachments.length;
+
+  const buildFullAnnotationsOutput = React.useCallback((): string => {
+    if (messageMultiSelectMode) {
+      let output = exportMessageAnnotations(buildMessageAnnotationEntries());
+      if (editorAnnotations.length > 0) {
+        output += `\n\n${exportEditorAnnotations(editorAnnotations)}`;
+      }
+      return output;
+    }
+    return '';
+  }, [messageMultiSelectMode, buildMessageAnnotationEntries, editorAnnotations]);
+
+  const annotationsOutput = useMemo(() => {
+    const docAnnotations = linkedDocHook.getDocAnnotations();
+    const hasDocAnnotations = Array.from(docAnnotations.values()).some(
+      (d) => d.annotations.length > 0 || d.globalAttachments.length > 0
+    );
+    const hasPlanAnnotations = allAnnotations.length > 0 || globalAttachments.length > 0;
+    const hasEditorAnnotations = editorAnnotations.length > 0;
+    const hasCodeAnnotations = codeAnnotations.length > 0;
+
+    if (!hasPlanAnnotations && !hasDocAnnotations && !hasEditorAnnotations && !hasCodeAnnotations) {
+      return 'User reviewed the document and has no feedback.';
+    }
+
+    const activeConverted = linkedDocHook.isActive
+      ? (docAnnotations.get(linkedDocHook.filepath ?? '')?.isConverted ?? false)
+      : sourceConverted;
+
+    let output = hasPlanAnnotations
+      ? exportAnnotations(
+          blocks,
+          allAnnotations,
+          globalAttachments,
+          annotateSource === 'message' ? 'Message Feedback' : annotateSource === 'folder' ? 'Folder Feedback' : annotateSource === 'file' ? 'File Feedback' : 'Plan Feedback',
+          annotateSource ?? 'plan',
+          { sourceConverted: activeConverted },
+        )
+      : '';
+
+    if (hasDocAnnotations) {
+      const enriched: Map<string, LinkedDocAnnotationEntry> = new Map(docAnnotations);
+      for (const [filepath, entry] of enriched) {
+        if (entry.markdown) {
+          enriched.set(filepath, { ...entry, blocks: parseMarkdownToBlocks(entry.markdown) });
+        }
+      }
+      output += exportLinkedDocAnnotations(enriched);
+    }
+
+    if (hasEditorAnnotations) {
+      output += exportEditorAnnotations(editorAnnotations);
+    }
+
+    if (hasCodeAnnotations) {
+      output += exportCodeFileAnnotations(codeAnnotations);
+    }
+
+    return output;
+  }, [blocks, allAnnotations, globalAttachments, linkedDocHook.getDocAnnotations, editorAnnotations, codeAnnotations, sourceConverted, annotateSource, linkedDocHook.isActive, linkedDocHook.filepath]);
+
   // Code-file comments are intentionally not serialized into share URLs in v1.
   // Hide share entry points once they exist so we do not silently drop feedback.
   const canShareCurrentSession = sharingEnabled && codeAnnotations.length === 0;
@@ -1244,7 +1392,7 @@ const App: React.FC = () => {
   }, [editableDocuments, getEditedMarkdown]);
 
   // Auto-save annotation drafts
-  const { draftBanner, restoreDraft, scheduleDraftSave, dismissDraft } = useAnnotationDraft({
+  const { draftBanner, restoreDraft, scheduleDraftSave, scheduleDraftSaveAfterSubmitFailure, getDraftGeneration, dismissDraft } = useAnnotationDraft({
     annotations: allAnnotations,
     codeAnnotations,
     globalAttachments,
@@ -1657,6 +1805,9 @@ const App: React.FC = () => {
     }
     // Mid-edit keystrokes persist too — a crash loses at most the debounce
     // window. The hook reads the live buffer via getDraftEditedMarkdown.
+    if (agentTerminalDeliveryRef.current) {
+      setAgentFeedbackRevision((version) => version + 1);
+    }
     scheduleDraftSave();
   }, [activeEditableDocument, editableDocuments, scheduleDraftSave]);
 
@@ -1743,7 +1894,7 @@ const App: React.FC = () => {
     !hasUnsavedSourceFileBuffers &&
     (isEditingMarkdown ? editorDiffersFromBaseline : editedMarkdownRef.current !== null);
   const hasSavedFileChanges = savedFileChanges.length > 0;
-  const hasFeedbackToSend = hasAnyAnnotations || hasDirectEdits || hasSavedFileChanges;
+  const hasFeedbackContent = hasAnyAnnotations || hasDirectEdits || hasSavedFileChanges;
   const feedbackLoss = feedbackLossDescription(feedbackAnnotationCount, hasDirectEdits);
   const hasUnsentFeedback = feedbackAnnotationCount > 0 || hasDirectEdits;
   const hasOnlySavedFileChanges = hasSavedFileChanges && !hasUnsentFeedback;
@@ -1801,6 +1952,15 @@ const App: React.FC = () => {
       buildSavedChangesSection(checkedSavedFileChanges),
     );
   }, [buildEditsSection, buildSavedChangesSection]);
+
+  const getCurrentFeedbackPayload = useCallback((checkedSavedFileChanges = savedFileChanges): string => {
+    return composeFeedback(messageMultiSelectMode ? buildFullAnnotationsOutput() : annotationsOutput, checkedSavedFileChanges);
+  }, [annotationsOutput, buildFullAnnotationsOutput, composeFeedback, messageMultiSelectMode, savedFileChanges]);
+
+  const withDraftGeneration = useCallback((path: string): string => {
+    const separator = path.includes('?') ? '&' : '?';
+    return `${path}${separator}draftGeneration=${getDraftGeneration()}`;
+  }, [getDraftGeneration]);
 
   const validateSavedFileChangesBeforeSubmit = useCallback(async (): Promise<SavedFileChangeDraftData[] | null> => {
     if (savedFileChangesForValidation.length === 0) return [];
@@ -1974,7 +2134,7 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; renderAs?: 'html' | 'markdown'; rawHtml?: string; shareHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string }; recentMessages?: PickerMessage[] }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; renderAs?: 'html' | 'markdown'; rawHtml?: string; shareHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string }; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // Session-level force-markdown preference (--markdown); threaded into folder/linked
@@ -2058,6 +2218,7 @@ const App: React.FC = () => {
         if (data.projectRoot) {
           setProjectRoot(data.projectRoot);
         }
+        setAgentTerminalCapability(data.agentTerminal ?? null);
         // Capture plan version history data
         if (data.previousPlan !== undefined) {
           setPreviousPlan(data.previousPlan);
@@ -2082,6 +2243,7 @@ const App: React.FC = () => {
         // Not in API mode - use default content
         setIsApiMode(false);
         setAISessionEnabled(false);
+        setAgentTerminalCapability(null);
         // Demo mode still exercises edit mode; baseline is the demo plan.
         originalMarkdownRef.current = DEMO_PLAN_CONTENT;
       })
@@ -2278,6 +2440,81 @@ const App: React.FC = () => {
     }
   };
 
+  const sendToAgentTerminal = useCallback((message: string) => {
+    const sent = agentTerminalRef.current?.sendMessage(message) ?? false;
+    if (!sent) return false;
+    openAgentTerminal();
+    return true;
+  }, [openAgentTerminal]);
+
+  const getAnnotateFeedbackTarget = useCallback((): AnnotateFeedbackTarget => {
+    if (linkedDocHook.isActive && linkedDocHook.filepath) {
+      return { fileHeader: 'File', filePath: linkedDocHook.filepath };
+    }
+    if (sourceFilePath) {
+      return { fileHeader: 'File', filePath: sourceFilePath };
+    }
+    if (fileBrowser.activeFile) {
+      return { fileHeader: 'File', filePath: fileBrowser.activeFile };
+    }
+    if (annotateSource === 'folder') {
+      return { fileHeader: 'Folder', filePath: fileBrowser.activeDirPath ?? projectRoot ?? 'selected folder' };
+    }
+    return { fileHeader: 'File', filePath: 'current file' };
+  }, [
+    annotateSource,
+    fileBrowser.activeDirPath,
+    fileBrowser.activeFile,
+    linkedDocHook.filepath,
+    linkedDocHook.isActive,
+    projectRoot,
+    sourceFilePath,
+  ]);
+
+  const buildAnnotateAgentFeedback = useCallback((feedback: string) => {
+    if (annotateSource === 'message') {
+      return annotateMessageFeedback(feedback);
+    }
+
+    return annotateFileFeedback(feedback, getAnnotateFeedbackTarget());
+  }, [annotateSource, getAnnotateFeedbackTarget]);
+
+  const currentFeedbackPayload = useMemo(() => getCurrentFeedbackPayload(), [
+    agentFeedbackRevision,
+    editableDocuments.version,
+    editorDiffersFromBaseline,
+    getCurrentFeedbackPayload,
+    savedFileChanges,
+  ]);
+  const currentAgentFeedbackTarget = useMemo(
+    () => getAnnotateFeedbackTarget(),
+    [getAnnotateFeedbackTarget],
+  );
+  const currentAgentFeedbackDelivery = useMemo(() => {
+    if (agentTerminalSessionId === null) return null;
+    return buildAgentTerminalDeliveryRecord({
+      terminalSessionId: agentTerminalSessionId,
+      feedback: currentFeedbackPayload,
+      targetPath: annotateSource === 'message' ? null : currentAgentFeedbackTarget.filePath,
+    });
+  }, [
+    agentTerminalSessionId,
+    annotateSource,
+    currentFeedbackPayload,
+    currentAgentFeedbackTarget.filePath,
+  ]);
+  const isCurrentFeedbackDeliveredToAgent = isMatchingAgentTerminalDelivery(
+    agentTerminalDelivery,
+    currentAgentFeedbackDelivery,
+  );
+  const showAgentTerminalDeliveryStatus =
+    annotateMode &&
+    agentTerminalDelivery !== null &&
+    isCurrentFeedbackDeliveredToAgent;
+  const hasFeedbackToSend =
+    hasFeedbackContent &&
+    !isCurrentFeedbackDeliveredToAgent;
+
   // API mode handlers
   const handleApprove = async () => {
     setIsSubmitting(true);
@@ -2296,7 +2533,9 @@ const App: React.FC = () => {
         : autoSaveResultsRef.current;
 
       // Build request body - include integrations if enabled
-      const body: { obsidian?: object; bear?: object; octarine?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string } = {};
+      const body: { draftGeneration: number; obsidian?: object; bear?: object; octarine?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string } = {
+        draftGeneration: getDraftGeneration(),
+      };
 
       // Include permission mode for Claude Code
       if (origin === 'claude-code') {
@@ -2357,7 +2596,7 @@ const App: React.FC = () => {
       const editsSection = buildEditsSection();
       const savedChangesSection = buildSavedChangesSection(checkedSavedFileChanges);
       if (allAnnotations.length > 0 || codeAnnotations.length > 0 || globalAttachments.length > 0 || hasDocAnnotations || editorAnnotations.length > 0 || editsSection || savedChangesSection) {
-        body.feedback = composeFeedback(messageMultiSelectMode ? buildFullAnnotationsOutput() : annotationsOutput, checkedSavedFileChanges);
+        body.feedback = getCurrentFeedbackPayload(checkedSavedFileChanges);
       }
 
       await fetch('/api/approve', {
@@ -2384,7 +2623,8 @@ const App: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          feedback: composeFeedback(messageMultiSelectMode ? buildFullAnnotationsOutput() : annotationsOutput, checkedSavedFileChanges),
+          draftGeneration: getDraftGeneration(),
+          feedback: getCurrentFeedbackPayload(checkedSavedFileChanges),
           planSave: {
             enabled: planSaveSettings.enabled,
             ...(planSaveSettings.customPath && { customPath: planSaveSettings.customPath }),
@@ -2397,7 +2637,8 @@ const App: React.FC = () => {
     }
   };
 
-  // Annotate mode handler — sends feedback via /api/feedback
+  // Annotate mode handler — sends feedback to the running terminal agent when
+  // available, otherwise through the original server feedback channel.
   const handleAnnotateFeedback = async () => {
     setIsSubmitting(true);
     try {
@@ -2407,14 +2648,39 @@ const App: React.FC = () => {
         setIsSubmitting(false);
         return;
       }
-      const feedback = composeFeedback(messageMultiSelectMode ? buildFullAnnotationsOutput() : annotationsOutput, checkedSavedFileChanges);
+      const feedback = getCurrentFeedbackPayload(checkedSavedFileChanges);
+      const agentFeedbackDelivery = agentTerminalSessionId === null
+        ? null
+        : buildAgentTerminalDeliveryRecord({
+            terminalSessionId: agentTerminalSessionId,
+            feedback,
+            targetPath: annotateSource === 'message' ? null : getAnnotateFeedbackTarget().filePath,
+          });
+      if (isAgentTerminalReady) {
+        if (!shouldSendAgentTerminalFeedback(agentTerminalDeliveryRef.current, agentFeedbackDelivery)) {
+          dismissDraft();
+          setIsSubmitting(false);
+          return;
+        }
+        const agentFeedback = buildAnnotateAgentFeedback(feedback);
+        if (agentFeedbackDelivery && sendToAgentTerminal(agentFeedback)) {
+          setAgentTerminalDelivery(agentFeedbackDelivery);
+          dismissDraft();
+          setIsSubmitting(false);
+          return;
+        }
+        handleAgentTerminalReadyChange(false);
+        toast.error('Agent terminal is not ready. Sending through the original session.');
+      }
+
       const scopedSelectedMessageId = messageMultiSelectMode
         ? annotatedMessageIds.length === 1 ? annotatedMessageIds[0] : undefined
         : selectedMessageId ?? undefined;
-      await fetch('/api/feedback', {
+      const res = await fetch('/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          draftGeneration: getDraftGeneration(),
           feedback,
           annotations: allAnnotations,
           codeAnnotations,
@@ -2422,9 +2688,12 @@ const App: React.FC = () => {
           ...(messageMultiSelectMode && annotatedMessageIds.length > 1 ? { feedbackScope: 'messages' } : {}),
         }),
       });
+      if (!res.ok) throw new Error('Failed to send feedback');
+      dismissDraft();
       setSubmitted('denied'); // reuse 'denied' state for "feedback sent" overlay
     } catch {
       setIsSubmitting(false);
+      scheduleDraftSaveAfterSubmitFailure();
     }
   };
 
@@ -2432,7 +2701,7 @@ const App: React.FC = () => {
   const handleAnnotateApprove = async () => {
     setIsSubmitting(true);
     try {
-      await fetch('/api/approve', { method: 'POST' });
+      await fetch(withDraftGeneration('/api/approve'), { method: 'POST' });
       setSubmitted('approved');
     } catch {
       setIsSubmitting(false);
@@ -2443,7 +2712,7 @@ const App: React.FC = () => {
   const handleAnnotateExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch('/api/exit', { method: 'POST' });
+      const res = await fetch(withDraftGeneration('/api/exit'), { method: 'POST' });
       if (res.ok) {
         setSubmitted('exited');
       } else {
@@ -2452,7 +2721,7 @@ const App: React.FC = () => {
     } catch {
       setIsExiting(false);
     }
-  }, []);
+  }, [withDraftGeneration]);
 
   const handleGoalSetupSubmit = useCallback(() => {
     goalSetupSurfaceRef.current?.submit();
@@ -2590,7 +2859,7 @@ const App: React.FC = () => {
     showExport, showImport, showFeedbackPrompt, showClaudeCodeWarning, showSourceFileEditWarning, showExitWarning, showAgentWarning,
     showPermissionModeSetup, pendingPasteImage,
     submitted, isSubmitting, isExiting, goalSetupAction.isSubmitting, isApiMode, isEditingMarkdown, linkedDocHook.isActive, annotations.length, codeAnnotations.length, externalAnnotations.length, annotateMode,
-    gate, hasFeedbackToSend, goalSetupMode, goalSetupAction.canSubmit,
+    gate, hasFeedbackToSend, goalSetupMode, goalSetupAction.canSubmit, isAgentTerminalReady,
     annotateSource, origin, getAgentWarning,
     maybeConfirmUnsavedSourceFileEdits,
   ]);
@@ -2717,66 +2986,6 @@ const App: React.FC = () => {
     // This is just a placeholder for future custom logic
   };
 
-  const buildFullAnnotationsOutput = React.useCallback((): string => {
-    if (messageMultiSelectMode) {
-      let output = exportMessageAnnotations(buildMessageAnnotationEntries());
-      if (editorAnnotations.length > 0) {
-        output += `\n\n${exportEditorAnnotations(editorAnnotations)}`;
-      }
-      return output;
-    }
-    return '';
-  }, [messageMultiSelectMode, buildMessageAnnotationEntries, editorAnnotations]);
-
-  const annotationsOutput = useMemo(() => {
-    const docAnnotations = linkedDocHook.getDocAnnotations();
-    const hasDocAnnotations = Array.from(docAnnotations.values()).some(
-      (d) => d.annotations.length > 0 || d.globalAttachments.length > 0
-    );
-    const hasPlanAnnotations = allAnnotations.length > 0 || globalAttachments.length > 0;
-    const hasEditorAnnotations = editorAnnotations.length > 0;
-    const hasCodeAnnotations = codeAnnotations.length > 0;
-
-    if (!hasPlanAnnotations && !hasDocAnnotations && !hasEditorAnnotations && !hasCodeAnnotations) {
-      return 'User reviewed the document and has no feedback.';
-    }
-
-    const activeConverted = linkedDocHook.isActive
-      ? (docAnnotations.get(linkedDocHook.filepath ?? '')?.isConverted ?? false)
-      : sourceConverted;
-
-    let output = hasPlanAnnotations
-      ? exportAnnotations(
-          blocks,
-          allAnnotations,
-          globalAttachments,
-          annotateSource === 'message' ? 'Message Feedback' : annotateSource === 'folder' ? 'Folder Feedback' : annotateSource === 'file' ? 'File Feedback' : 'Plan Feedback',
-          annotateSource ?? 'plan',
-          { sourceConverted: activeConverted },
-        )
-      : '';
-
-    if (hasDocAnnotations) {
-      const enriched: Map<string, LinkedDocAnnotationEntry> = new Map(docAnnotations);
-      for (const [filepath, entry] of enriched) {
-        if (entry.markdown) {
-          enriched.set(filepath, { ...entry, blocks: parseMarkdownToBlocks(entry.markdown) });
-        }
-      }
-      output += exportLinkedDocAnnotations(enriched);
-    }
-
-    if (hasEditorAnnotations) {
-      output += exportEditorAnnotations(editorAnnotations);
-    }
-
-    if (hasCodeAnnotations) {
-      output += exportCodeFileAnnotations(codeAnnotations);
-    }
-
-    return output;
-  }, [blocks, allAnnotations, globalAttachments, linkedDocHook.getDocAnnotations, editorAnnotations, codeAnnotations, sourceConverted, annotateSource, linkedDocHook.isActive, linkedDocHook.filepath]);
-
   const aiAnnotationsContext = useMemo(
     () => hasAnyAnnotations ? annotationsOutput : undefined,
     [annotationsOutput, hasAnyAnnotations],
@@ -2866,6 +3075,48 @@ const App: React.FC = () => {
     sessionId: aiSessionId,
   } = aiChat;
   const canUseAI = aiAvailable && aiContext !== null;
+  const canUseAskAI = canUseAI || isAgentTerminalReady;
+  const canUseDocumentAskAI = canUseAskAI;
+  const visibleAIMessages = isAgentTerminalReady ? [] : aiMessages;
+  const visibleAIProviders = useMemo<AIProviderOption[]>(
+    () => isAgentTerminalReady ? [{ id: 'agent-terminal', name: 'Agent terminal' }] : aiProviders,
+    [aiProviders, isAgentTerminalReady],
+  );
+  const visibleAIConfig = isAgentTerminalReady
+    ? { providerId: 'agent-terminal', model: null, reasoningEffort: null }
+    : aiConfig;
+
+  const terminalAskReadableFilePath = useMemo(() => {
+    if (linkedDocHook.isActive && linkedDocHook.filepath) return linkedDocHook.filepath;
+    if (sourceFilePath) return sourceFilePath;
+    if (fileBrowser.activeFile) return fileBrowser.activeFile;
+    return null;
+  }, [fileBrowser.activeFile, linkedDocHook.filepath, linkedDocHook.isActive, sourceFilePath]);
+
+  const buildAgentAskPrompt = useCallback((question: string, context?: CommentAskAIContext) => {
+    const scope = context ? {
+      kind: context.kind,
+      label: context.label,
+      text: context.text,
+      sourcePath: context.sourcePath ?? aiDocumentPath,
+    } : undefined;
+    const scopedQuestion = buildDefaultPrompt({
+      prompt: question,
+      scope,
+    });
+    return buildTerminalAskPrompt({
+      scopedQuestion,
+      documentPath: aiDocumentPath,
+      annotationsContext: aiAnnotationsContext,
+      readableFilePath: terminalAskReadableFilePath,
+      inlineDocument: terminalAskReadableFilePath
+        ? null
+        : {
+            label: aiRenderAs === 'html' ? 'Current document HTML' : 'Current document text',
+            content: aiRenderAs === 'html' && rawHtml ? rawHtml : displayedMarkdown,
+          },
+    });
+  }, [aiAnnotationsContext, aiDocumentPath, aiRenderAs, displayedMarkdown, rawHtml, terminalAskReadableFilePath]);
 
   const aiDocumentKey = aiContext
     ? `${aiDocumentMode ? 'document' : 'plan'}:${aiRenderAs}:${aiDocumentPath}:${versionInfo?.version ?? 'current'}`
@@ -2913,8 +3164,23 @@ const App: React.FC = () => {
     openAIChat();
   }, [dismissPlanAIAnnouncement, openAIChat]);
 
-  const handleAskAI = useCallback((question: string, context?: CommentAskAIContext) => {
-    if (!canUseAI) return;
+  const handleAskAI = useCallback((question: string, context?: CommentAskAIContext): boolean => {
+    if (isAgentTerminalReady) {
+      if (sendToAgentTerminal(buildAgentAskPrompt(question, context))) {
+        dismissPlanAIAnnouncement();
+        return true;
+      }
+      handleAgentTerminalReadyChange(false);
+      if (!canUseAI) {
+        toast.error('Agent terminal is not ready');
+        return false;
+      }
+    }
+
+    if (!canUseAI) {
+      toast.error('Ask AI is unavailable');
+      return false;
+    }
     dismissPlanAIAnnouncement();
     openAIChat();
     askAI({
@@ -2927,7 +3193,20 @@ const App: React.FC = () => {
       } : undefined,
       contextUpdate: aiSessionId ? aiAnnotationsContext : undefined,
     });
-  }, [aiAnnotationsContext, aiDocumentPath, aiSessionId, askAI, canUseAI, dismissPlanAIAnnouncement, openAIChat]);
+    return true;
+  }, [
+    aiAnnotationsContext,
+    aiDocumentPath,
+    aiSessionId,
+    askAI,
+    buildAgentAskPrompt,
+    canUseAI,
+    dismissPlanAIAnnouncement,
+    handleAgentTerminalReadyChange,
+    isAgentTerminalReady,
+    openAIChat,
+    sendToAgentTerminal,
+  ]);
 
   const handleAskGeneralAI = useCallback((question: string) => {
     handleAskAI(question, { kind: 'general', label: aiDocumentMode ? 'Document' : 'Plan', sourcePath: aiDocumentPath });
@@ -2967,7 +3246,7 @@ const App: React.FC = () => {
 
   // Quick-save handlers for export dropdown and keyboard shortcut
   const handleDownloadAnnotations = () => {
-    const output = composeFeedback(messageMultiSelectMode ? buildFullAnnotationsOutput() : annotationsOutput);
+    const output = getCurrentFeedbackPayload();
     const blob = new Blob([output], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -3436,6 +3715,16 @@ const App: React.FC = () => {
   }, [uiPrefs.planWidth]);
   const annotateReaderMaxWidth = canUseWideMode && wideModeType === 'wide' ? null : planMaxWidth;
   const selectedAIProvider = aiProviders.find(provider => provider.id === aiConfig.providerId) ?? null;
+  const showAgentTerminalControls =
+    annotateMode &&
+    annotateSource !== 'message' &&
+    agentTerminalCapability !== null &&
+    !goalSetupMode;
+  const shouldRenderAgentTerminal =
+    showAgentTerminalControls &&
+    agentTerminalCapability !== null &&
+    wideModeType === null &&
+    (isAgentTerminalOpen || isAgentTerminalRunning);
   // Only greet in a normal authoring context — not on a read-only shared session
   // (a viewer would also be able to flip the owner's gridEnabled), nor over the
   // goal-setup / permission-mode flows. Deferred (not marked seen) until then.
@@ -3486,9 +3775,9 @@ const App: React.FC = () => {
           isSubmitting={isSubmitting}
           isExiting={isExiting}
           isPanelOpen={isPanelOpen && rightSidebarTab === 'annotations'}
-          aiAvailable={canUseAI}
+          aiAvailable={canUseAskAI}
           isAIChatOpen={isPanelOpen && rightSidebarTab === 'ai'}
-          aiHasMessages={aiMessages.length > 0}
+          aiHasMessages={visibleAIMessages.length > 0}
           hasAnyAnnotations={hasAnyAnnotations || hasDirectEdits || hasSavedFileChanges}
           linkedDocIsActive={linkedDocHook.isActive}
           callbackShareUrlReady={callbackConfig ? Boolean(shareUrl || shortShareUrl || (renderAs === 'html' && (shareHtml || rawHtml))) : true}
@@ -3588,14 +3877,48 @@ const App: React.FC = () => {
             </button>
           </div>
         )}
+        {showAgentTerminalDeliveryStatus && (
+          <div className="border-b border-primary/20 bg-primary/5 px-4 py-2 text-xs text-muted-foreground flex-shrink-0">
+            <span className="font-medium text-foreground">Sent to agent.</span>{" "}
+            Keep this window open while it runs. Close Plannotator when you're done.
+          </div>
+        )}
 
         {/* Main Content */}
         <ScrollViewportContext.Provider value={scrollViewport}>
         <div data-print-region="content" className={`flex-1 flex overflow-hidden relative z-0 ${isResizing ? 'select-none' : ''}`}>
           {/* Tater sprites — inside content wrapper so z-0 stacking context applies */}
           {taterMode && <TaterSpriteRunning />}
+          {shouldRenderAgentTerminal && agentTerminalCapability && (
+            <div
+              className={
+                isAgentTerminalOpen
+                  ? "contents group/agent-terminal"
+                  : "absolute left-0 top-0 h-full w-0 overflow-hidden pointer-events-none group/agent-terminal"
+              }
+              aria-hidden={!isAgentTerminalOpen}
+              inert={!isAgentTerminalOpen ? true : undefined}
+            >
+              <AnnotateAgentTerminalPanel
+                ref={agentTerminalRef}
+                capability={agentTerminalCapability}
+                width={`var(--agent-terminal-w, ${agentTerminalResize.width}px)`}
+                onSessionActiveChange={setIsAgentTerminalRunning}
+                onSessionReadyChange={handleAgentTerminalReadyChange}
+                onClose={hideAgentTerminal}
+              />
+              {isAgentTerminalOpen && (
+                <ResizeHandle
+                  {...agentTerminalResize.handleProps}
+                  className="hidden lg:block z-[55]"
+                  side="left"
+                  onCollapse={hideAgentTerminal}
+                />
+              )}
+            </div>
+          )}
           {/* Left Sidebar: collapsed tab flags (when sidebar is closed) */}
-          {wideModeType === null && !sidebar.isOpen && !goalSetupMode && (
+          {wideModeType === null && !sidebar.isOpen && !goalSetupMode && !isAgentTerminalOpen && (
             <SidebarTabs
               activeTab={sidebar.activeTab}
               onToggleTab={toggleSidebarTab}
@@ -3603,6 +3926,10 @@ const App: React.FC = () => {
               showVersionsTab={versionInfo !== null && versionInfo.totalVersions > 1}
               showFilesTab={showFilesTab && !archive.archiveMode}
               showMessagesTab={annotateSource === 'message' && recentMessages.length > 1}
+              showAgentTerminalTab={showAgentTerminalControls}
+              isAgentTerminalOpen={isAgentTerminalOpen}
+              isAgentTerminalRunning={isAgentTerminalRunning}
+              onToggleAgentTerminal={toggleAgentTerminal}
               hasMessageAnnotations={activeMessageAnnotationCounts.size > 0}
               hasFileAnnotations={hasFileAnnotations}
               className="hidden lg:flex absolute left-0 top-0 z-20"
@@ -3620,6 +3947,10 @@ const App: React.FC = () => {
                 }}
                 onClose={sidebar.close}
                 width={`var(--toc-w, ${tocResize.width}px)`}
+                showAgentTerminalButton={showAgentTerminalControls}
+                isAgentTerminalOpen={isAgentTerminalOpen}
+                isAgentTerminalRunning={isAgentTerminalRunning}
+                onToggleAgentTerminal={toggleAgentTerminal}
                 blocks={blocks}
                 annotations={annotations}
                 activeSection={activeSection}
@@ -3686,7 +4017,7 @@ const App: React.FC = () => {
           {/* Document Area */}
           <OverlayScrollArea
             element="main"
-            className={`flex-1 min-w-0 ${isHtmlSurface ? 'bg-background' : `${gridEnabled ? "bg-grid " : "bg-card "}${!goalSetupMode && !sidebar.isOpen && wideModeType === null ? 'lg:pl-[30px]' : ''}`}`}
+            className={`flex-1 min-w-0 ${isHtmlSurface ? 'bg-background' : `${gridEnabled ? "bg-grid " : "bg-card "}${!goalSetupMode && !sidebar.isOpen && !isAgentTerminalOpen && wideModeType === null ? 'lg:pl-[30px]' : ''}`}`}
             data-print-region="document"
             onViewportReady={handleViewportReady}
           >
@@ -3924,7 +4255,7 @@ const App: React.FC = () => {
                     maxWidth={isHtmlSurface ? null : annotateReaderMaxWidth}
                     fullViewport={isHtmlSurface}
                     hideControls={htmlToolsHidden}
-                    onAskAI={canUseAI ? handleAskAI : undefined}
+                    onAskAI={canUseDocumentAskAI ? handleAskAI : undefined}
                   />
                 ) : isEditingMarkdown ? (
                   <MarkdownEditor
@@ -3998,7 +4329,7 @@ const App: React.FC = () => {
                     onToggleCheckbox={checkbox.toggle}
                     checkboxOverrides={checkbox.overrides}
                     actionsLabelMode={actionsLabelMode}
-                    onAskAI={canUseAI ? handleAskAI : undefined}
+                    onAskAI={canUseDocumentAskAI ? handleAskAI : undefined}
                   />
                 )}
               </div>
@@ -4011,7 +4342,7 @@ const App: React.FC = () => {
               ancestor (`contents` = no layout box). */}
           <div className="contents group/sidebar">
           {/* Resize Handle */}
-          {isPanelOpen && wideModeType === null && !goalSetupMode && (rightSidebarTab === 'annotations' || canUseAI) && <ResizeHandle {...panelResize.handleProps} className="hidden md:block z-[55]" side="right" onCollapse={() => setIsPanelOpen(false)} />}
+          {isPanelOpen && wideModeType === null && !goalSetupMode && (rightSidebarTab === 'annotations' || canUseAskAI) && <ResizeHandle {...panelResize.handleProps} className="hidden md:block z-[55]" side="right" onCollapse={() => setIsPanelOpen(false)} />}
 
           {/* Annotation Panel */}
           <AnnotationPanel
@@ -4032,7 +4363,7 @@ const App: React.FC = () => {
             onDeleteEditorAnnotation={deleteEditorAnnotation}
             onClose={() => setIsPanelOpen(false)}
             onQuickCopy={async () => {
-              const output = composeFeedback(messageMultiSelectMode ? buildFullAnnotationsOutput() : annotationsOutput);
+              const output = getCurrentFeedbackPayload();
               await navigator.clipboard.writeText(wrapFeedbackForAgent(output));
             }}
             onShare={canShareCurrentSession ? () => { setIsPanelOpen(false); setInitialExportTab('share'); setShowExport(true); } : undefined}
@@ -4043,7 +4374,7 @@ const App: React.FC = () => {
             })) ?? null}
             onOtherFileAnnotationsClick={handleFlashAnnotatedFiles}
           />
-          {isPanelOpen && rightSidebarTab === 'ai' && wideModeType === null && !goalSetupMode && canUseAI && (
+          {isPanelOpen && rightSidebarTab === 'ai' && wideModeType === null && !goalSetupMode && canUseAskAI && (
             <aside
               data-annotation-panel="true"
               className={`border-l border-border/50 bg-card flex flex-col flex-shrink-0 ${
@@ -4058,9 +4389,9 @@ const App: React.FC = () => {
                     <h2 className="text-xs font-medium text-foreground">
                       AI
                     </h2>
-                    {aiMessages.length > 0 && (
+                    {visibleAIMessages.length > 0 && (
                       <span className="flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary/10 px-1 font-mono text-[10px] font-medium tabular-nums text-primary">
-                        {aiMessages.length}
+                        {visibleAIMessages.length}
                       </span>
                     )}
                   </div>
@@ -4079,15 +4410,15 @@ const App: React.FC = () => {
                 </div>
               </div>
               <DocumentAIChatPanel
-                messages={aiMessages}
-                isCreatingSession={aiIsCreatingSession}
-                isStreaming={aiIsStreaming}
+                messages={visibleAIMessages}
+                isCreatingSession={isAgentTerminalReady ? false : aiIsCreatingSession}
+                isStreaming={isAgentTerminalReady ? false : aiIsStreaming}
                 onAskGeneral={handleAskGeneralAI}
-                permissionRequests={aiPermissionRequests}
-                onRespondToPermission={respondToAIPermission}
-                aiProviders={aiProviders}
-                aiConfig={aiConfig}
-                onAIConfigChange={handleAIConfigChange}
+                permissionRequests={isAgentTerminalReady ? [] : aiPermissionRequests}
+                onRespondToPermission={isAgentTerminalReady ? undefined : respondToAIPermission}
+                aiProviders={visibleAIProviders}
+                aiConfig={visibleAIConfig}
+                onAIConfigChange={isAgentTerminalReady ? undefined : handleAIConfigChange}
               />
             </aside>
           )}
@@ -4125,7 +4456,7 @@ const App: React.FC = () => {
             // Computed only while the modal is open: composeFeedback runs a
             // unified diff when edits exist — not per-render work.
             showExport
-              ? composeFeedback(messageMultiSelectMode ? buildFullAnnotationsOutput() : annotationsOutput)
+              ? getCurrentFeedbackPayload()
               : ''
           }
           annotationCount={allAnnotations.length + codeAnnotations.length}

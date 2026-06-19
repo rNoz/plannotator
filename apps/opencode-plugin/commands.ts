@@ -223,6 +223,7 @@ export async function handleAnnotateCommand(
   let isFolder = false;
   let sourceInfo: string | undefined;
   let sourceConverted = false;
+  const agentCwd = directory || process.cwd();
 
   // --- URL annotation ---
   const isUrl = /^https?:\/\//i.test(filePath);
@@ -241,7 +242,7 @@ export async function handleAnnotateCommand(
     absolutePath = filePath;
     sourceInfo = filePath;
   } else {
-    const projectRoot = directory || process.cwd();
+    const projectRoot = agentCwd;
     const resolvedArg = resolveUserPath(filePath, projectRoot);
 
     try {
@@ -321,6 +322,7 @@ export async function handleAnnotateCommand(
     shareBaseUrl: getShareBaseUrl(),
     pasteApiUrl: getPasteApiUrl(),
     gate,
+    agentCwd,
     htmlContent,
     onReady: (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);

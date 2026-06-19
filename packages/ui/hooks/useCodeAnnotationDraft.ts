@@ -13,7 +13,17 @@ const DEBOUNCE_MS = 500;
 interface DraftData {
   codeAnnotations: CodeAnnotation[];
   viewedFiles?: string[];
+  draftGeneration?: number;
   ts: number;
+}
+
+interface MissingDraftData {
+  found?: false;
+  draftGeneration?: number;
+}
+
+function readDraftGeneration(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 function formatTimeAgo(ts: number): string {
@@ -37,6 +47,7 @@ interface UseCodeAnnotationDraftOptions {
 interface UseCodeAnnotationDraftResult {
   draftBanner: { count: number; viewedCount: number; timeAgo: string } | null;
   restoreDraft: () => { annotations: CodeAnnotation[]; viewedFiles: string[] };
+  getDraftGeneration: () => number;
   dismissDraft: () => void;
 }
 
@@ -50,17 +61,29 @@ export function useCodeAnnotationDraft({
   const draftDataRef = useRef<DraftData | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasMountedRef = useRef(false);
+  const draftGenerationRef = useRef(0);
 
   // Load draft on mount
   useEffect(() => {
     if (!isApiMode) return;
 
     fetch('/api/draft')
-      .then(res => {
-        if (!res.ok) return null;
-        return res.json();
+      .then(async res => {
+        const data = await res.json().catch(() => null) as DraftData | MissingDraftData | null;
+        if (!res.ok) {
+          const generation = readDraftGeneration((data as MissingDraftData | null)?.draftGeneration);
+          if (generation !== null) {
+            draftGenerationRef.current = Math.max(draftGenerationRef.current, generation);
+          }
+          return null;
+        }
+        return data;
       })
       .then((data: DraftData | null) => {
+        const generation = readDraftGeneration(data?.draftGeneration);
+        if (generation !== null) {
+          draftGenerationRef.current = Math.max(draftGenerationRef.current, generation);
+        }
         const annotationCount = Array.isArray(data?.codeAnnotations) ? data.codeAnnotations.length : 0;
         const viewedCount = Array.isArray(data?.viewedFiles) ? data.viewedFiles.length : 0;
         if (annotationCount > 0 || viewedCount > 0) {
@@ -87,9 +110,12 @@ export function useCodeAnnotationDraft({
     if (timerRef.current) clearTimeout(timerRef.current);
 
     timerRef.current = setTimeout(() => {
+      const draftGeneration = draftGenerationRef.current + 1;
+      draftGenerationRef.current = draftGeneration;
       const payload: DraftData = {
         codeAnnotations: annotations,
         viewedFiles: [...viewedFiles],
+        draftGeneration,
         ts: Date.now(),
       };
 
@@ -117,11 +143,15 @@ export function useCodeAnnotationDraft({
     };
   }, []);
 
+  const getDraftGeneration = useCallback(() => draftGenerationRef.current + 1, []);
+
   const dismissDraft = useCallback(() => {
+    const deletedGeneration = draftGenerationRef.current + 1;
+    draftGenerationRef.current = deletedGeneration;
     setDraftBanner(null);
     draftDataRef.current = null;
-    fetch('/api/draft', { method: 'DELETE' }).catch(() => {});
+    fetch(`/api/draft?generation=${deletedGeneration}`, { method: 'DELETE' }).catch(() => {});
   }, []);
 
-  return { draftBanner, restoreDraft, dismissDraft };
+  return { draftBanner, restoreDraft, getDraftGeneration, dismissDraft };
 }

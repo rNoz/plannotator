@@ -1005,6 +1005,25 @@ describe("install shared behavior", () => {
     expect(sh).toContain("PLANNOTATOR_SKIP_SEM_INSTALL=1");
   });
 
+  test("all installers install agent terminal runtime as a non-fatal optional dependency", () => {
+    const cmdScript = readFileSync(join(scriptsDir, "install.cmd"), "utf-8");
+
+    expect(sh).toContain("install_agent_terminal_runtime");
+    expect(sh).toContain('"$INSTALL_DIR/plannotator" install-runtime agent-terminal');
+    expect(sh).toContain("Skipping agent terminal runtime install");
+    expect(sh).toContain("PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL=1");
+
+    expect(ps).toContain("function Install-AgentTerminalRuntime");
+    expect(ps).toContain("& $plannotatorPath install-runtime agent-terminal");
+    expect(ps).toContain("Skipping agent terminal runtime install");
+    expect(ps).toContain("PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL");
+
+    expect(cmdScript).toContain("call :InstallAgentTerminalRuntime");
+    expect(cmdScript).toContain('"!INSTALL_PATH!" install-runtime agent-terminal');
+    expect(cmdScript).toContain("Skipping agent terminal runtime install");
+    expect(cmdScript).toContain("PLANNOTATOR_SKIP_AGENT_TERMINAL_INSTALL");
+  });
+
   test("install.sh and help text use vX.Y.Z placeholder not v0.17.1", () => {
     // Regression guard: the docs and --help text previously used v0.17.1
     // as a concrete pinned-version example. That tag predates provenance

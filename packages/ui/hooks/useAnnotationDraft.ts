@@ -56,7 +56,14 @@ interface DraftData {
   editedDocuments?: DraftEditedDocument[];
   /** Source-backed edits that were already saved to disk but not sent yet. */
   savedFileChanges?: DraftSavedFileChange[];
+  /** Client-side generation used to ignore stale saves after a draft delete. */
+  draftGeneration?: number;
   ts: number;
+}
+
+interface MissingDraftData {
+  found?: false;
+  draftGeneration?: number;
 }
 
 /** Old format: compact tuples (for backward compat on load). */
@@ -146,6 +153,10 @@ function isDraftSourceSaveCapability(value: unknown): value is DraftSourceSaveCa
   );
 }
 
+function readDraftGeneration(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
 function formatTimeAgo(ts: number): string {
   const seconds = Math.floor((Date.now() - ts) / 1000);
   if (seconds < 60) return 'just now';
@@ -188,6 +199,8 @@ interface UseAnnotationDraftResult {
   /** Debounced save trigger for changes the reactive deps can't see
       (editor keystrokes, edit commit/discard). Stable identity. */
   scheduleDraftSave: () => void;
+  scheduleDraftSaveAfterSubmitFailure: () => void;
+  getDraftGeneration: () => number;
   dismissDraft: () => void;
 }
 
@@ -206,6 +219,7 @@ export function useAnnotationDraft({
   const draftDataRef = useRef<RestoredDraft | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasMountedRef = useRef(false);
+  const draftGenerationRef = useRef(0);
 
   // Latest-values ref so the stable scheduleDraftSave reads current data when
   // the debounce fires, without re-creating callbacks per keystroke.
@@ -220,9 +234,16 @@ export function useAnnotationDraft({
     if (!isApiMode || isSharedSession) return;
 
     fetch('/api/draft')
-      .then(res => {
-        if (!res.ok) return null;
-        return res.json();
+      .then(async res => {
+        const data = await res.json().catch(() => null) as DraftData | LegacyDraftData | MissingDraftData | null;
+        if (!res.ok) {
+          const generation = readDraftGeneration((data as MissingDraftData | null)?.draftGeneration);
+          if (generation !== null) {
+            draftGenerationRef.current = Math.max(draftGenerationRef.current, generation);
+          }
+          return null;
+        }
+        return data;
       })
       .then((data: DraftData | LegacyDraftData | null) => {
         if (!data) {
@@ -240,10 +261,18 @@ export function useAnnotationDraft({
           restoredGlobal = data.g ? (parseShareableImages(data.g as Parameters<typeof parseShareableImages>[0]) ?? []) : [];
         } else if (Array.isArray(data.annotations)) {
           // New direct-object format
+          const generation = readDraftGeneration(data.draftGeneration);
+          if (generation !== null) {
+            draftGenerationRef.current = Math.max(draftGenerationRef.current, generation);
+          }
           restoredAnnotations = data.annotations;
           restoredCodeAnnotations = Array.isArray(data.codeAnnotations) ? data.codeAnnotations : [];
           restoredGlobal = Array.isArray(data.globalAttachments) ? data.globalAttachments : [];
         } else if (Array.isArray((data as DraftData).codeAnnotations) && (data as DraftData).codeAnnotations!.length > 0) {
+          const generation = readDraftGeneration((data as DraftData).draftGeneration);
+          if (generation !== null) {
+            draftGenerationRef.current = Math.max(draftGenerationRef.current, generation);
+          }
           restoredAnnotations = [];
           restoredCodeAnnotations = (data as DraftData).codeAnnotations!;
           restoredGlobal = Array.isArray((data as DraftData).globalAttachments) ? (data as DraftData).globalAttachments : [];
@@ -304,10 +333,14 @@ export function useAnnotationDraft({
       // Everything was cleared (last annotation removed, edits discarded).
       // A stale draft left on disk would offer back content the user
       // explicitly threw away.
-      fetch('/api/draft', { method: 'DELETE', keepalive }).catch(() => {});
+      const deletedGeneration = draftGenerationRef.current + 1;
+      draftGenerationRef.current = deletedGeneration;
+      fetch(`/api/draft?generation=${deletedGeneration}`, { method: 'DELETE', keepalive }).catch(() => {});
       return;
     }
 
+    const draftGeneration = draftGenerationRef.current + 1;
+    draftGenerationRef.current = draftGeneration;
     const payload: DraftData = {
       annotations,
       codeAnnotations,
@@ -315,6 +348,7 @@ export function useAnnotationDraft({
       ...(editedMarkdown !== null ? { editedMarkdown } : {}),
       ...(editedDocuments.length > 0 ? { editedDocuments } : {}),
       ...(savedFileChanges.length > 0 ? { savedFileChanges } : {}),
+      draftGeneration,
       ts: Date.now(),
     };
 
@@ -323,7 +357,9 @@ export function useAnnotationDraft({
     fetch('/api/draft', { method: 'POST', headers, body, keepalive }).catch(() => {
       // Chromium caps keepalive bodies (~64KB); retry without it. Completes
       // fine when the page was only backgrounded, best-effort on close.
-      if (keepalive && canPersistRef.current) fetch('/api/draft', { method: 'POST', headers, body }).catch(() => {});
+      if (keepalive && canPersistRef.current && draftGenerationRef.current === draftGeneration) {
+        fetch('/api/draft', { method: 'POST', headers, body }).catch(() => {});
+      }
       // Otherwise silent failure — draft is best-effort.
     });
   }, []);
@@ -337,6 +373,14 @@ export function useAnnotationDraft({
       persistNow(false);
     }, DEBOUNCE_MS);
   }, [persistNow]);
+
+  const scheduleDraftSaveAfterSubmitFailure = useCallback(() => {
+    setTimeout(() => {
+      scheduleDraftSave();
+    }, 0);
+  }, [scheduleDraftSave]);
+
+  const getDraftGeneration = useCallback(() => draftGenerationRef.current + 1, []);
 
   // Flush a pending save when the page is backgrounded or closed — otherwise
   // the last debounce window of typing is lost on tab close, and reopening
@@ -360,12 +404,15 @@ export function useAnnotationDraft({
     };
   }, [persistNow]);
 
-  // Debounced auto-save on annotation changes
+  // Debounced auto-save on content changes. The submitted/isSubmitting gate is
+  // read inside the effect, but it is deliberately not a trigger: when a submit
+  // attempt finishes and flips the gate back open, we should not recreate a
+  // draft that was just deleted unless the user actually changes feedback again.
   useEffect(() => {
     if (!isApiMode || isSharedSession || submitted) return;
     if (!hasMountedRef.current) return;
     scheduleDraftSave();
-  }, [annotations, codeAnnotations, globalAttachments, isApiMode, isSharedSession, submitted, scheduleDraftSave]);
+  }, [annotations, codeAnnotations, globalAttachments, isApiMode, isSharedSession, scheduleDraftSave]);
 
   // Clear any pending save on unmount.
   useEffect(() => {
@@ -385,13 +432,19 @@ export function useAnnotationDraft({
   }, []);
 
   const dismissDraft = useCallback(() => {
+    const deletedGeneration = draftGenerationRef.current + 1;
+    draftGenerationRef.current = deletedGeneration;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
     setDraftBanner(null);
     draftDataRef.current = null;
 
-    fetch('/api/draft', { method: 'DELETE' }).catch(() => {
+    fetch(`/api/draft?generation=${deletedGeneration}`, { method: 'DELETE' }).catch(() => {
       // Silent failure
     });
   }, []);
 
-  return { draftBanner, restoreDraft, scheduleDraftSave, dismissDraft };
+  return { draftBanner, restoreDraft, scheduleDraftSave, scheduleDraftSaveAfterSubmitFailure, getDraftGeneration, dismissDraft };
 }

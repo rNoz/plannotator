@@ -47,7 +47,7 @@ interface UseAIChatOptions {
   threadTitle?: string;
 }
 
-function buildDefaultPrompt(params: AskAIParams): string {
+export function buildDefaultPrompt(params: AskAIParams): string {
   if (params.filePath && params.lineStart != null && params.lineEnd != null) {
     const lineRef = params.lineStart === params.lineEnd
       ? `line ${params.lineStart}`

@@ -38,7 +38,7 @@ import {
 } from "@plannotator/shared/pr-stack";
 import type { AgentJobInfo } from "@plannotator/shared/agent-jobs";
 import { getRepoInfo } from "./repo";
-import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, type OpencodeClient } from "./shared-handlers";
+import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, readDraftGenerationFromBody, readDraftGenerationFromUrl, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { createEditorAnnotationHandler } from "./editor-annotations";
 import { createExternalAnnotationHandler } from "./external-annotations";
@@ -1418,7 +1418,7 @@ export async function startReviewServer(
           // API: Annotation draft persistence
           if (url.pathname === "/api/draft") {
             if (req.method === "POST") return handleDraftSave(req, draftKey);
-            if (req.method === "DELETE") return handleDraftDelete(draftKey);
+            if (req.method === "DELETE") return handleDraftDelete(draftKey, req);
             return handleDraftLoad(draftKey);
           }
 
@@ -1440,7 +1440,7 @@ export async function startReviewServer(
 
           // API: Exit review session without feedback
           if (url.pathname === "/api/exit" && req.method === "POST") {
-            deleteDraft(draftKey);
+            deleteDraft(draftKey, readDraftGenerationFromUrl(req));
             resolveDecision({ approved: false, feedback: "", annotations: [], exit: true });
             return Response.json({ ok: true });
           }
@@ -1453,9 +1453,10 @@ export async function startReviewServer(
                 feedback: string;
                 annotations: unknown[];
                 agentSwitch?: string;
+                draftGeneration?: number;
               };
 
-              deleteDraft(draftKey);
+              deleteDraft(draftKey, readDraftGenerationFromBody(body));
               resolveDecision({
                 approved: body.approved ?? false,
                 feedback: body.feedback || "",

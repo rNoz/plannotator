@@ -110,6 +110,7 @@ import {
 import { registerSession, unregisterSession, listSessions } from "@plannotator/server/sessions";
 import { openBrowser } from "@plannotator/server/browser";
 import { inlineHtmlLocalAssets } from "@plannotator/server/html-assets";
+import { installAgentTerminalRuntime } from "@plannotator/server/agent-terminal-runtime";
 import { detectProjectName } from "@plannotator/server/project";
 import { hostnameOrFallback } from "@plannotator/shared/project";
 import { readImprovementHook } from "@plannotator/shared/improvement-hooks";
@@ -253,6 +254,17 @@ if (isVersionInvocation(args)) {
 if (isTopLevelHelpInvocation(args)) {
   console.log(formatTopLevelHelp());
   process.exit(0);
+}
+
+if (args[0] === "install-runtime") {
+  const runtime = args[1];
+  if (runtime !== "agent-terminal") {
+    console.error("Usage: plannotator install-runtime agent-terminal");
+    process.exit(1);
+  }
+  const result = await installAgentTerminalRuntime();
+  console.log(result.message);
+  process.exit(result.ok ? 0 : 1);
 }
 
 if (isInteractiveNoArgInvocation(args, process.stdin.isTTY)) {
@@ -1013,6 +1025,7 @@ if (args[0] === "sessions") {
     rawHtml,
     renderHtml: !!rawHtml,
     convertHtml: renderMarkdownFlag,
+    agentCwd: projectRoot,
     htmlContent: planHtmlContent,
     onReady: async (url, isRemote, port) => {
       handleAnnotateServerReady(url, isRemote, port);

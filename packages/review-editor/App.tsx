@@ -412,7 +412,7 @@ const ReviewApp: React.FC = () => {
   allAnnotationsRef.current = allAnnotations;
 
   // Auto-save code annotation drafts
-  const { draftBanner, restoreDraft, dismissDraft } = useCodeAnnotationDraft({
+  const { draftBanner, restoreDraft, getDraftGeneration, dismissDraft } = useCodeAnnotationDraft({
     annotations: allAnnotations,
     viewedFiles,
     isApiMode: !!origin,
@@ -1668,6 +1668,7 @@ const ReviewApp: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          draftGeneration: getDraftGeneration(),
           approved: false,
           feedback: feedbackMarkdown,
           annotations: allAnnotations,
@@ -1685,13 +1686,13 @@ const ReviewApp: React.FC = () => {
       setTimeout(() => setCopyFeedback(null), 2000);
       setIsSendingFeedback(false);
     }
-  }, [totalAnnotationCount, feedbackMarkdown, allAnnotations]);
+  }, [totalAnnotationCount, feedbackMarkdown, allAnnotations, getDraftGeneration]);
 
   // Exit review session without sending any feedback
   const handleExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch('/api/exit', { method: 'POST' });
+      const res = await fetch(`/api/exit?draftGeneration=${getDraftGeneration()}`, { method: 'POST' });
       if (res.ok) {
         setSubmitted('exited');
       } else {
@@ -1701,7 +1702,7 @@ const ReviewApp: React.FC = () => {
       console.error('Failed to exit review:', error);
       setIsExiting(false);
     }
-  }, []);
+  }, [getDraftGeneration]);
 
   // Approve without feedback (LGTM)
   const handleApprove = useCallback(async () => {
@@ -1711,6 +1712,7 @@ const ReviewApp: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          draftGeneration: getDraftGeneration(),
           approved: true,
           feedback: 'LGTM - no changes requested.', // unused — integrations branch on `approved` flag
           annotations: [],
@@ -1727,7 +1729,7 @@ const ReviewApp: React.FC = () => {
       setTimeout(() => setCopyFeedback(null), 2000);
       setIsApproving(false);
     }
-  }, []);
+  }, [getDraftGeneration]);
 
   // Submit reviews to one or more PRs via /api/pr-action
   const handlePlatformAction = useCallback(async (action: 'approve' | 'comment', plan: ReviewSubmission, generalComment?: string) => {

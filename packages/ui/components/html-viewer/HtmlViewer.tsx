@@ -13,7 +13,7 @@ import { AnnotationType } from "../../types";
 import { getIdentity } from "../../utils/identity";
 import { AnnotationToolbar } from "../AnnotationToolbar";
 import { AttachmentsButton } from "../AttachmentsButton";
-import { CommentPopover, type CommentAskAIContext } from "../CommentPopover";
+import { CommentPopover, type CommentAskAIHandler } from "../CommentPopover";
 import { FloatingQuickLabelPicker } from "../FloatingQuickLabelPicker";
 import type { ViewerHandle } from "../Viewer";
 import { useHtmlAnnotation } from "./useHtmlAnnotation";
@@ -83,7 +83,7 @@ export interface HtmlViewerProps {
   /** Hide the floating doc-level controls (attachments + global comment) in
    *  full-viewport mode, so the user can read the page unobstructed. */
   hideControls?: boolean;
-  onAskAI?: (question: string, context: CommentAskAIContext) => void;
+  onAskAI?: CommentAskAIHandler;
 }
 
 export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
