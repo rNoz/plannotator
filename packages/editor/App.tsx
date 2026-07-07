@@ -102,6 +102,11 @@ import type { AgentTerminalCapability } from '@plannotator/shared/agent-terminal
 import { DEMO_PLAN_CONTENT as DEFAULT_DEMO_PLAN_CONTENT } from './demoPlan';
 import { DIFF_DEMO_PLAN_CONTENT } from './demoPlanDiffDemo';
 import { canUseAnnotateWideMode, resolveWideModeExitLayout, type WideModeLayoutSnapshot, type WideModeType } from './wideMode';
+import {
+  annotateSidebarShortcuts,
+  useAnnotateSidebarShortcuts,
+  useDoubleTapShortcuts,
+} from '@plannotator/ui/shortcuts';
 const USE_DIFF_DEMO =
   import.meta.env.VITE_DIFF_DEMO === '1' ||
   import.meta.env.VITE_DIFF_DEMO === 'true';
@@ -823,6 +828,64 @@ const App: React.FC = () => {
     () => !!projectRoot || isFileBrowserEnabled() || isVaultBrowserEnabled(),
     [projectRoot, uiPrefs]
   );
+
+  const canHandleAnnotateSidebarShortcut = useCallback((event: KeyboardEvent) => {
+    if (!annotateMode || archive.archiveMode || goalSetupMode) return false;
+    if (event.defaultPrevented) return false;
+    if (document.querySelector('[data-plannotator-confirm-dialog="true"]')) return false;
+    if (showExport || showImport || showFeedbackPrompt || showClaudeCodeWarning ||
+        showSourceFileEditWarning ||
+        showExitWarning || showAgentWarning || showPermissionModeSetup || pendingPasteImage) return false;
+    if (submitted || isSubmitting || isExiting || isEditingMarkdown) return false;
+
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    return tag !== 'INPUT' && tag !== 'TEXTAREA' && !target?.isContentEditable;
+  }, [
+    annotateMode,
+    archive.archiveMode,
+    goalSetupMode,
+    showExport,
+    showImport,
+    showFeedbackPrompt,
+    showClaudeCodeWarning,
+    showSourceFileEditWarning,
+    showExitWarning,
+    showAgentWarning,
+    showPermissionModeSetup,
+    pendingPasteImage,
+    submitted,
+    isSubmitting,
+    isExiting,
+    isEditingMarkdown,
+  ]);
+
+  useAnnotateSidebarShortcuts({
+    handlers: {
+      toggleContents: {
+        when: canHandleAnnotateSidebarShortcut,
+        handle: () => toggleSidebarTab('toc'),
+      },
+      toggleFiles: {
+        when: (event) => canHandleAnnotateSidebarShortcut(event) && showFilesTab && !archive.archiveMode,
+        handle: () => toggleSidebarTab('files'),
+      },
+    },
+  });
+
+  useDoubleTapShortcuts({
+    scope: annotateSidebarShortcuts,
+    handlers: {
+      toggleAgentTui: {
+        when: (event) =>
+          canHandleAnnotateSidebarShortcut(event) &&
+          annotateSource !== 'message' &&
+          agentTerminalCapability !== null,
+        handle: () => toggleAgentTerminal(),
+      },
+    },
+  });
+
   const fileBrowserDirs = useMemo(() => {
     const projectDirs = projectRoot ? [projectRoot] : [];
     const userDirs = isFileBrowserEnabled()

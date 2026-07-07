@@ -78,7 +78,7 @@ interface SettingsProps {
   onTaterModeChange: (enabled: boolean) => void;
   onIdentityChange?: (oldIdentity: string, newIdentity: string) => void;
   origin?: Origin | null;
-  mode?: 'plan' | 'review';
+  mode?: 'plan' | 'annotate' | 'review';
   onUIPreferencesChange?: (prefs: UIPreferences) => void;
   /** Externally controlled open state (for mobile menu integration) */
   externalOpen?: boolean;
