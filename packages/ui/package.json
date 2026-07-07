@@ -1,6 +1,6 @@
 {
   "name": "@plannotator/ui",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "type": "module",
   "exports": {
     "./components/*": "./components/*.tsx",
@@ -47,7 +47,7 @@
     "!test-setup"
   ],
   "dependencies": {
-    "@plannotator/atomic-editor": "^0.5.0",
+    "@base-ui/react": "^1.6.0",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-javascript": "^6.2.5",
@@ -62,18 +62,13 @@
     "@codemirror/view": "^6.43.0",
     "@fontsource-variable/geist-mono": "5.2.7",
     "@fontsource-variable/inter": "^5.2.8",
-    "@pierre/diffs": "1.2.8",
     "@lezer/common": "^1.5.2",
     "@lezer/highlight": "^1.2.3",
+    "@pierre/diffs": "1.2.8",
+    "@plannotator/atomic-editor": "^0.5.0",
     "@plannotator/core": "workspace:*",
     "@plannotator/markdown-editor": "^0.2.0",
     "@plannotator/web-highlighter": "^0.8.1",
-    "@radix-ui/react-dialog": "^1.1.15",
-    "@radix-ui/react-dropdown-menu": "^2.1.16",
-    "@radix-ui/react-popover": "^1.1.15",
-    "@radix-ui/react-slot": "^1.2.4",
-    "@radix-ui/react-tabs": "^1.1.13",
-    "@radix-ui/react-tooltip": "^1.2.8",
     "@tanstack/react-table": "^8.21.3",
     "@viz-js/viz": "^3.25.0",
     "class-variance-authority": "^0.7.1",
@@ -93,8 +88,7 @@
   "peerDependencies": {
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "tailwindcss": "^4.1.18",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss": "^4.1.18"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.10.1",
@@ -105,7 +99,6 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "tailwindcss": "^4.1.18",
-    "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   },
