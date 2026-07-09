@@ -45,6 +45,23 @@ The sidebar/panel resize handle exposes seams for hosts that want different edge
 
 Building your own tooltip and removing the built-in double-click reset are host-side concerns (override `onDoubleClick` where you render the handle).
 
+### Markdown editor extensions + wiki links (`MarkdownEditor` / `InlineMarkdown`)
+
+- **`MarkdownEditor` takes CM6 extensions.** `extensions?: readonly Extension[]` (from `@codemirror/state`) is forwarded verbatim into the underlying editor — the seam for `wikiLinks(config)`, `y-codemirror.next` collab bindings, custom keymaps.
+
+  > **⚠️ Captured once per `documentId` — not reactive.** The engine reads the array a single time at document mount; swapping the array later is silently ignored until a `documentId` change remounts. Pass a stable reference, and feed changing data through extension config callbacks that close over live state (refs/getters) — never through new arrays.
+
+- **`wikiLinks` is re-exported from `@plannotator/ui/components/MarkdownEditor`** together with `WikiLinksConfig`, `WikiLinkSuggestion`, `WikiLinkResolvedTarget`, `WikiLinkStatus`. Import it from there — `@plannotator/atomic-editor` stays off the supported-import list:
+  ```tsx
+  import { MarkdownEditor, wikiLinks } from "@plannotator/ui/components/MarkdownEditor";
+
+  const editorExtensions = [wikiLinks({ suggest, resolve, onOpen })]; // stable reference!
+  <MarkdownEditor markdown={md} documentId={docId} editorHandleRef={ref} extensions={editorExtensions} />
+  ```
+- **The viewer resolves wiki-links synchronously.** `InlineMarkdown` takes `resolveLinkedDoc?: (target) => { label?; status?: 'active' | 'deleted' } | null` — called with the raw stored target (opaque ids like `doc_01XYZ`, no `.md` normalization). Return a `label` to display live titles (stored label is the fallback, target the last resort); return `status: 'deleted'` for a muted non-link ("Document deleted") instead of a live link. Absent or `null` → rendering is unchanged. Sync-only by design: back it with an in-memory cache.
+
+Requires `@plannotator/markdown-editor ^0.3.1` and `@plannotator/atomic-editor ^0.6.0`. See HANDOFF.md § "Wiki-link seams (0.27.0)".
+
 ## Consuming it (e.g. from Workspaces)
 
 ```bash
