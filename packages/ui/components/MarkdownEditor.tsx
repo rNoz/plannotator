@@ -3,6 +3,7 @@ import {
   MarkdownEditor as PackagedMarkdownEditor,
   type MarkdownEditorHandle,
 } from '@plannotator/markdown-editor';
+import type { Extension } from '@codemirror/state';
 import '@plannotator/markdown-editor/themes/plannotator.css';
 import { useTheme } from './ThemeProvider';
 
@@ -27,6 +28,26 @@ interface MarkdownEditorProps {
   /** Theme color mode. Defaults to the ThemeProvider's resolved mode (Plannotator
       passes nothing); a host without ThemeProvider can supply it directly. */
   mode?: React.ComponentProps<typeof PackagedMarkdownEditor>['mode'];
+  /**
+   * Extra CodeMirror 6 extensions, forwarded verbatim to the underlying editor
+   * (e.g. `wikiLinks(config)`, collaboration bindings like y-codemirror.next).
+   * They are appended after the editor's built-ins, so they compose on top —
+   * use `Prec.high` from `@codemirror/state` when an extension must beat a
+   * built-in keymap. Build them against YOUR copy of the `@codemirror/*`
+   * packages; two live copies of `@codemirror/state` break the editor.
+   *
+   * ⚠️ CAPTURED ONCE PER `documentId` — NOT reactive. The engine reads this
+   * array a single time, when it mounts the document (keyed on `documentId`).
+   * Swapping in a different array afterwards does NOT re-apply it: the change
+   * is silently ignored until the next remount (i.e. a `documentId` change).
+   * Therefore:
+   *   - pass a stable reference (module constant, or `useMemo` keyed on
+   *     `documentId`), and
+   *   - never encode changing data in the array itself. Extension config
+   *     callbacks MAY close over live state (refs/getters) — that is the
+   *     supported way to feed dynamic data into a mounted editor.
+   */
+  extensions?: readonly Extension[];
 }
 
 /* Theme-bridging shim around @plannotator/markdown-editor. App.tsx renders its
