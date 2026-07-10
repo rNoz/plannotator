@@ -360,7 +360,11 @@ describe("install.ps1", () => {
     // EnterPlanMode hook drives the compound-skill improvement-hook injection.
     expect(script).toContain('"PreToolUse"');
     expect(script).toContain('"matcher": "EnterPlanMode"');
-    expect(script).toContain('"command": "$exePathJson improve-context"');
+    // The exe path is JSON-escaped-quoted so hooks survive a space in the
+    // install path (e.g. C:\Users\John Smith\...). Unquoted paths word-split
+    // when the hook shell runs them and the hook silently never fires.
+    expect(script).toContain('"command": "\\"$exePathJson\\" improve-context"');
+    expect(script).toContain('"command": "\\"$exePathJson\\""');
     expect(script).toContain('"timeout": 5');
   });
 
@@ -534,13 +538,22 @@ describe("install.cmd", () => {
     // EnterPlanMode hook drives the compound-skill improvement-hook injection.
     expect(script).toContain('echo     "PreToolUse": [');
     expect(script).toContain('echo         "matcher": "EnterPlanMode",');
-    expect(script).toContain('echo             "command": "!EXE_PATH! improve-context",');
+    // Quoted for space-in-path installs — same invariant as install.ps1.
+    expect(script).toContain('echo             "command": "\\"!EXE_PATH!\\" improve-context",');
+    expect(script).toContain('echo             "command": "\\"!EXE_PATH!\\"",');
     expect(script).toContain('echo             "timeout": 5');
   });
 
   test("uses full exe path in hooks.json", () => {
     expect(script).toContain("EXE_PATH");
     expect(script).toContain('!INSTALL_PATH:\\=/!');
+  });
+
+  test("uses only ASCII text so cmd.exe consoles render output on any codepage", () => {
+    // Mirrors install.ps1's ASCII guarantee (#1021): cmd.exe's default active
+    // code page is not UTF-8, so em-dashes/ellipses in echoed strings render
+    // as mojibake for most Windows users.
+    expect(script).toMatch(/^[\x00-\x7F]*$/);
   });
 
   test("verifies checksums with certutil", () => {

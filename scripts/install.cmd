@@ -30,7 +30,7 @@ if /i "%~1"=="--version" (
         echo --version requires an argument >&2
         exit /b 1
     )
-    REM Reject dash-prefixed values — prevents `install.cmd --version
+    REM Reject dash-prefixed values - prevents `install.cmd --version
     REM --skip-attestation` from silently setting VERSION=--skip-attestation.
     set "NEXT_ARG=%~2"
     if "!NEXT_ARG:~0,1!"=="-" (
@@ -132,7 +132,7 @@ REM because unquoted %~1 in an echo pipe lets cmd.exe interpret shell
 REM metacharacters (& | > <) in the argument before the pipe runs. Assigning
 REM to a `set "VAR=%~1"` literal-quoted form preserves metacharacters safely,
 REM and delayed-expansion substring (!VAR:~0,1!) avoids the subprocess entirely.
-REM The error-message echo also quotes "%~1" for the same reason — echoing an
+REM The error-message echo also quotes "%~1" for the same reason - echoing an
 REM unquoted arg containing `&` would re-trigger metacharacter interpretation.
 set "CURRENT_ARG=%~1"
 if "!CURRENT_ARG:~0,1!"=="-" (
@@ -141,7 +141,7 @@ if "!CURRENT_ARG:~0,1!"=="-" (
     exit /b 1
 )
 REM Positional form: install.cmd vX.Y.Z (legacy interface).
-REM Reject if --version was already passed — silent overwrite is worse
+REM Reject if --version was already passed - silent overwrite is worse
 REM than a clean usage error.
 if "!VERSION_EXPLICIT!"=="1" (
     echo Unexpected positional argument: "%~1" ^(version already set^) >&2
@@ -168,13 +168,13 @@ set "SEM_VERSION=v0.8.0"
 set "INSTALL_DIR=%USERPROFILE%\.local\bin"
 
 REM First plannotator release that carries SLSA build-provenance attestations.
-REM See scripts/install.sh for the full explanation — this constant is
+REM See scripts/install.sh for the full explanation - this constant is
 REM bumped once at the first attested release via the release skill.
 set "MIN_ATTESTED_VERSION=v0.17.2"
 
 REM Detect architecture. Native ARM64 Windows binaries are built from
 REM bun-windows-arm64 (stable since Bun v1.3.10), so ARM64 hosts get a
-REM native binary — no Windows x86-64 emulation tax. PROCESSOR_ARCHITECTURE
+REM native binary - no Windows x86-64 emulation tax. PROCESSOR_ARCHITECTURE
 REM reports the architecture the current cmd.exe process is running under;
 REM PROCESSOR_ARCHITEW6432 is set only in 32-bit processes running via
 REM WoW64 and reflects the host architecture (covers the edge case of a
@@ -229,7 +229,7 @@ if /i "!VERSION!"=="latest" (
 ) else (
     set "TAG=!VERSION!"
     REM Add v prefix if not present. Use a substring test rather than
-    REM piping the expanded variable through findstr — an unquoted echo
+    REM piping the expanded variable through findstr - an unquoted echo
     REM pipe re-exposes cmd metacharacters (& | > <) in the value before
     REM the pipe runs. Matches the safe pattern used in the arg parser.
     if not "!TAG:~0,1!"=="v" set "TAG=v!TAG!"
@@ -276,10 +276,10 @@ REM would let a crafted --version value break out of the single-quoted literal
 REM and execute arbitrary PowerShell (e.g. --version "0.18.0'; calc; '0.18.0"
 REM would run Calculator). $env: reads the raw string; PowerShell never parses
 REM the value as code. [version] cast throws on invalid input, catch swallows,
-REM VERSION_OK stays empty, and the guard rejects — safe fail.
+REM VERSION_OK stays empty, and the guard rejects - safe fail.
 if "!VERIFY_ATTESTATION!"=="1" (
     REM Strip the leading `v` via substring-from-index-1. cmd's `:str=repl`
-    REM substitution is GLOBAL, not anchored — `!TAG:v=!` would remove every
+    REM substitution is GLOBAL, not anchored - `!TAG:v=!` would remove every
     REM `v` in the string, not just the leading one, so a hypothetical tag
     REM like `v1.0.0-rev2` would become `1.0.0-re2` and break the [version]
     REM cast. TAG is guaranteed to start with `v` by the normalization step
@@ -297,7 +297,7 @@ if "!VERIFY_ATTESTATION!"=="1" (
     REM we reject explicitly with an accurate diagnosis instead of silently
     REM misclassifying the failure.
     REM
-    REM Uses native cmd substitution `!VAR:-=!` to check for `-` presence —
+    REM Uses native cmd substitution `!VAR:-=!` to check for `-` presence -
     REM no subshell, no metacharacter risk. If removing `-` changes the
     REM string, the original contained a `-`.
     if not "!TAG_NUM!"=="!TAG_NUM:-=!" (
@@ -388,7 +388,7 @@ if "!VERIFY_ATTESTATION!"=="1" (
         REM between concurrent invocations. Matches install.sh / install.ps1.
         REM
         REM Verification is constrained to the exact tag (--source-ref) AND
-        REM the specific signing workflow file (--signer-workflow) — not
+        REM the specific signing workflow file (--signer-workflow) - not
         REM just "built somewhere in this repo". See install.sh for full
         REM rationale.
         set "GH_OUTPUT=%TEMP%\plannotator-gh-%RANDOM%.txt"
@@ -463,7 +463,7 @@ echo         "matcher": "EnterPlanMode",
 echo         "hooks": [
 echo           {
 echo             "type": "command",
-echo             "command": "!EXE_PATH! improve-context",
+echo             "command": "\"!EXE_PATH!\" improve-context",
 echo             "timeout": 5
 echo           }
 echo         ]
@@ -475,7 +475,7 @@ echo         "matcher": "ExitPlanMode",
 echo         "hooks": [
 echo           {
 echo             "type": "command",
-echo             "command": "!EXE_PATH!",
+echo             "command": "\"!EXE_PATH!\"",
 echo             "timeout": 345600
 echo           }
 echo         ]
@@ -545,8 +545,8 @@ REM   %%USERPROFILE%%\.gemini\commands          <- apps\gemini\commands\*.toml (
 REM Nothing goes to the Codex home (CODEX_DIR\skills) anymore.
 REM ----------------------------------------------------------------------
 
-REM Aggressive cleanup on upgrade — echo each removal, ignore missing.
-REM NOTE: legacy Claude command cleanup happens AFTER the skill install below —
+REM Aggressive cleanup on upgrade - echo each removal, ignore missing.
+REM NOTE: legacy Claude command cleanup happens AFTER the skill install below -
 REM a command file is only removed once its replacement skill is on disk, so a
 REM failed or skipped skill install never leaves users with neither.
 if defined CLAUDE_CONFIG_DIR (
@@ -555,14 +555,14 @@ if defined CLAUDE_CONFIG_DIR (
     set "CLAUDE_COMMANDS_DIR=%USERPROFILE%\.claude\commands"
 )
 
-REM NOTE: Codex stale-skill cleanup happens AFTER the skill install below —
+REM NOTE: Codex stale-skill cleanup happens AFTER the skill install below -
 REM the core skills are only removed from the Codex home once their
 REM replacement exists in %%USERPROFILE%%\.agents\skills.
 set "STALE_CODEX_SKILLS_DIR=!CODEX_DIR!\skills"
 
 REM Old installers (pre core/extra split) ran a wholesale skills copy against
 REM a new-layout tag and could leave junk core/extra directory copies in the
-REM Claude skills scope. Never valid skill names — always safe to remove.
+REM Claude skills scope. Never valid skill names - always safe to remove.
 if defined CLAUDE_CONFIG_DIR (
     set "CLAUDE_SKILLS_SCOPE=%CLAUDE_CONFIG_DIR%\skills"
 ) else (
@@ -576,8 +576,8 @@ for %%J in (core extra) do (
 )
 
 REM Extras are no longer managed in the Claude / shared-agent scopes. Remove
-REM previously default-installed copies ONCE per machine — recorded in the
-REM migrations ledger under the Plannotator data dir — because copies the user
+REM previously default-installed copies ONCE per machine - recorded in the
+REM migrations ledger under the Plannotator data dir - because copies the user
 REM reinstalls via `npx skills add` are byte-identical to ours and can only be
 REM told apart by remembering that this cleanup already ran.
 if defined CLAUDE_CONFIG_DIR (
@@ -609,7 +609,7 @@ REM answers persisted to install-prefs in the Plannotator data dir and reused
 REM silently on re-runs. --reconfigure re-opens the wizard; --non-interactive
 REM forces silence. `set /p` returns empty at EOF, so redirected/CI runs fall
 REM through to the defaults without hanging. Flags win over everything.
-REM No checkbox UI in batch — the skill picker uses numbered toggles instead.
+REM No checkbox UI in batch - the skill picker uses numbered toggles instead.
 set "PREFS_FILE=!_CONFIG_DIR!\install-prefs"
 set "SAVED_EXTRAS="
 set "SAVED_INVOCABLE="
@@ -620,7 +620,7 @@ if exist "!PREFS_FILE!" (
     )
 )
 
-REM Extras already on disk? Then the extras question is moot — they still
+REM Extras already on disk? Then the extras question is moot - they still
 REM count toward the picker list, and we never launch the npx flow over them.
 set "EXTRAS_PRESENT=0"
 for %%S in (plannotator-compound plannotator-setup-goal plannotator-visual-explainer) do (
@@ -630,7 +630,7 @@ for %%S in (plannotator-compound plannotator-setup-goal plannotator-visual-expla
 
 REM A wizard needs a real console. `timeout` exits non-zero when stdin is
 REM redirected ("Input redirection is not supported"), making it a reliable
-REM console probe — CI and redirected runs never see the wizard and never
+REM console probe - CI and redirected runs never see the wizard and never
 REM trigger the wizard-only installs (npx extras). The set /p
 REM EOF-fallthrough remains as a second line of defense.
 set "CAN_PROMPT=0"
@@ -657,7 +657,7 @@ if not defined INVOCABLE_CHOICE (
     if defined SAVED_INVOCABLE (set "INVOCABLE_CHOICE=!SAVED_INVOCABLE!") else (set "INVOCABLE_CHOICE=none")
 )
 
-REM Persist only when the wizard ran or a flag set something — silent re-runs
+REM Persist only when the wizard ran or a flag set something - silent re-runs
 REM must not clobber saved answers with defaults.
 set "DO_PERSIST=0"
 if "!RUN_WIZARD!"=="1" set "DO_PERSIST=1"
@@ -672,7 +672,7 @@ if "!DO_PERSIST!"=="1" (
 )
 
 REM Extras install is delegated to the skills CLI (its UI picks the agents).
-REM Interactive wizard runs only — silent runs and CI get the printed command.
+REM Interactive wizard runs only - silent runs and CI get the printed command.
 REM Never runs when the extras already exist.
 if "!EXTRAS_CHOICE!"=="yes" if "!EXTRAS_PRESENT!"=="0" (
     set "NPX_OK=0"
@@ -681,7 +681,7 @@ if "!EXTRAS_CHOICE!"=="yes" if "!EXTRAS_PRESENT!"=="0" (
     if "!NPX_OK!"=="1" (
         echo Launching the skills CLI for the extras ^(pick your agents in its UI^)...
         call npx skills add backnotprop/plannotator/apps/skills/extra
-        if not !ERRORLEVEL! equ 0 echo skills CLI did not complete — install later with: npx skills add backnotprop/plannotator/apps/skills/extra
+        if not !ERRORLEVEL! equ 0 echo skills CLI did not complete - install later with: npx skills add backnotprop/plannotator/apps/skills/extra
     ) else (
         echo Install the extras with: npx skills add backnotprop/plannotator/apps/skills/extra
     )
@@ -711,9 +711,9 @@ if !ERRORLEVEL! equ 0 (
     pushd "!SKILLS_TMP!\repo"
     git sparse-checkout set apps/skills apps/kiro-cli apps/opencode-plugin/commands apps/gemini/commands >nul 2>&1
 
-    REM Claude Code reads apps\skills\claude\* (injection `!`plannotator … $ARGUMENTS``
+    REM Claude Code reads apps\skills\claude\* (injection `!`plannotator ... $ARGUMENTS``
     REM + allowed-tools, so /plannotator-* run with no permission prompt); Codex
-    REM reads apps\skills\core\* (prose). The `!`…`` injection is Claude-Code-only,
+    REM reads apps\skills\core\* (prose). The `!`...`` injection is Claude-Code-only,
     REM so the two are sourced separately. Replace rather than merge on each run.
     if exist "apps\skills\claude" (
         if not exist "!CLAUDE_SKILLS_DIR!" mkdir "!CLAUDE_SKILLS_DIR!"
@@ -736,7 +736,7 @@ if !ERRORLEVEL! equ 0 (
         )
         echo Installed shared agent skills to !AGENTS_SKILLS_DIR!\
     ) else (
-        echo Tag !TAG! predates the core/extra skill layout — skipping core skill install
+        echo Tag !TAG! predates the core/extra skill layout - skipping core skill install
     )
 
     REM OpenCode command stubs -> always (plugin intercepts execution).
@@ -772,7 +772,7 @@ if !ERRORLEVEL! equ 0 (
             if exist "!KIRO_SKILLS_DIR!\plannotator-visual-explainer" rmdir /s /q "!KIRO_SKILLS_DIR!\plannotator-visual-explainer" >nul 2>&1
             xcopy /s /i /y /q "apps\skills\extra\plannotator-visual-explainer" "!KIRO_SKILLS_DIR!\plannotator-visual-explainer\" >nul 2>&1
         )
-        REM Plannotator custom agent — don't clobber a user's existing one.
+        REM Plannotator custom agent - don't clobber a user's existing one.
         if not exist "!KIRO_AGENTS_DIR!\plannotator.json" if exist "apps\kiro-cli\agents\plannotator.json" (
             if not exist "!KIRO_AGENTS_DIR!" mkdir "!KIRO_AGENTS_DIR!"
             copy /y "apps\kiro-cli\agents\plannotator.json" "!KIRO_AGENTS_DIR!\plannotator.json" >nul 2>&1
@@ -789,12 +789,12 @@ rmdir /s /q "!SKILLS_TMP!" >nul 2>&1
 
 if "!CHECKOUT_FAILED!"=="1" (
     echo Error: unable to fetch !REPO! at !TAG! ^(network or git error^). 1>&2
-    echo Something went wrong — run the installer again. 1>&2
+    echo Something went wrong - run the installer again. 1>&2
     exit /b 1
 )
 
 REM Claude Code commands are deprecated in favor of skills. Remove a legacy
-REM command file only once its replacement skill is actually on disk — running
+REM command file only once its replacement skill is actually on disk - running
 REM AFTER the install above guarantees a failed or skipped skill install never
 REM leaves users with neither the command nor the skill.
 for %%C in (plannotator-review plannotator-annotate plannotator-last) do (
@@ -813,7 +813,7 @@ for %%D in ("!CLAUDE_SKILLS_DIR!" "!AGENTS_SKILLS_DIR!" "!KIRO_SKILLS_DIR!") do 
     )
 )
 
-REM The /plannotator-archive OpenCode command was removed too — sweep the stub.
+REM The /plannotator-archive OpenCode command was removed too - sweep the stub.
 if exist "!OPENCODE_COMMANDS_DIR!\plannotator-archive.md" (
     del /q "!OPENCODE_COMMANDS_DIR!\plannotator-archive.md" >nul 2>&1
     echo Removed stale plannotator-archive command from !OPENCODE_COMMANDS_DIR!
@@ -973,7 +973,7 @@ if not "!EXTRAS_CHOICE!"=="yes" (
 )
 
 REM Warn if plannotator is configured in both settings.json hooks AND the plugin (causes double execution)
-REM Only warn when the plugin is installed — manual-only users won't have overlap
+REM Only warn when the plugin is installed - manual-only users won't have overlap
 if defined CLAUDE_CONFIG_DIR (
     set "CLAUDE_SETTINGS=%CLAUDE_CONFIG_DIR%\settings.json"
 ) else (
@@ -1158,10 +1158,10 @@ echo   PLANNOTATOR GUIDED INSTALL
 echo ==========================================
 echo.
 if "!EXTRAS_PRESENT!"=="1" (
-    echo Extra skills already installed — keeping them.
+    echo Extra skills already installed - keeping them.
     set "EXTRAS_CHOICE=yes"
 ) else if defined EXTRAS_FLAG (
-    REM Flag already answered this question — don't ask and then ignore.
+    REM Flag already answered this question - don't ask and then ignore.
     set "EXTRAS_CHOICE=!EXTRAS_FLAG!"
 ) else (
     set "DEF_EXTRAS=no"
@@ -1174,7 +1174,7 @@ if "!EXTRAS_PRESENT!"=="1" (
     if "!ANSWER!"=="" set "EXTRAS_CHOICE=!DEF_EXTRAS!"
 )
 if defined MODEL_INVOCABLE_FLAG (
-    REM Flag already answered this question — don't ask and then ignore.
+    REM Flag already answered this question - don't ask and then ignore.
     set "INVOCABLE_CHOICE=!MODEL_INVOCABLE_FLAG!"
     goto :eof
 )
@@ -1197,7 +1197,7 @@ if "!EXTRAS_CHOICE!"=="yes" (
     set "SKILL_5=plannotator-setup-goal"
     set "SKILL_6=plannotator-visual-explainer"
 )
-REM Preselect previously chosen skills. NOTE: no pipes here — each side of a
+REM Preselect previously chosen skills. NOTE: no pipes here - each side of a
 REM cmd pipe runs in a child without delayed expansion, so !vars! would pass
 REM through literally. A substring-replace containment test avoids that trap.
 set "PRESEL=,!SAVED_INVOCABLE!,"

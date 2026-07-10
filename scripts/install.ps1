@@ -396,7 +396,7 @@ if (Test-Path $pluginHooks) {
         "hooks": [
           {
             "type": "command",
-            "command": "$exePathJson improve-context",
+            "command": "\"$exePathJson\" improve-context",
             "timeout": 5
           }
         ]
@@ -408,7 +408,7 @@ if (Test-Path $pluginHooks) {
         "hooks": [
           {
             "type": "command",
-            "command": "$exePathJson",
+            "command": "\"$exePathJson\"",
             "timeout": 345600
           }
         ]
