@@ -142,7 +142,13 @@ import {
   isSubcommandHelpInvocation,
   isTopLevelHelpInvocation,
   isVersionInvocation,
+  parseStrictAnnotateOptions,
 } from "./cli";
+import { completeAnnotateCommand } from "./annotate-command";
+import {
+  assertResultPathAvailable,
+  resolveResultFilePath,
+} from "./strict-annotate-result";
 import path from "path";
 import { tmpdir } from "os";
 import { buildLocalWorkspaceReview, type WorkspaceDiffType } from "@plannotator/server/review-workspace";
@@ -157,7 +163,24 @@ import reviewHtml from "../dist/review.html" with { type: "text" };
 const reviewHtmlContent = reviewHtml as unknown as string;
 
 // Check for subcommand
-const args = process.argv.slice(2);
+let parsedStrictAnnotateOptions;
+try {
+  parsedStrictAnnotateOptions = parseStrictAnnotateOptions(
+    process.argv.slice(2),
+  );
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+const args = parsedStrictAnnotateOptions.remainingArgs;
+const requireApprovalFlag =
+  parsedStrictAnnotateOptions.requireApproval;
+const resultFile = parsedStrictAnnotateOptions.resultFile
+  ? resolveResultFilePath(
+      parsedStrictAnnotateOptions.resultFile,
+      process.env.PLANNOTATOR_CWD || process.cwd(),
+    )
+  : undefined;
 
 // Global flag: --browser <name>
 const browserIdx = args.indexOf("--browser");
@@ -901,7 +924,7 @@ if (args[0] === "sessions") {
 
   const rawFilePath = args[1];
   if (!rawFilePath) {
-    console.error("Usage: plannotator annotate <file.md | file.txt | file.html | https://... | folder/>  [--markdown] [--no-jina] [--gate] [--json] [--hook]");
+    console.error("Usage: plannotator annotate <file.md | file.txt | file.html | https://... | folder/>  [--markdown] [--no-jina] [--gate] [--json] [--hook] [--require-approval] [--result-file <path>]");
     process.exit(1);
   }
 
@@ -912,6 +935,15 @@ if (args[0] === "sessions") {
 
   // Use PLANNOTATOR_CWD if set (original working directory before script cd'd)
   const projectRoot = process.env.PLANNOTATOR_CWD || process.cwd();
+
+  if (resultFile) {
+    try {
+      await assertResultPathAvailable(resultFile);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+  }
 
   if (process.env.PLANNOTATOR_DEBUG) {
     console.error(`[DEBUG] Project root: ${projectRoot}`);
@@ -1079,18 +1111,14 @@ if (args[0] === "sessions") {
       : `annotate-${isUrl ? hostnameOrFallback(absolutePath) : path.basename(absolutePath)}`,
   });
 
-  // Wait for user feedback
-  const result = await server.waitForDecision();
-
-  // Give browser time to receive response and update UI
-  await Bun.sleep(1500);
-
-  // Cleanup
-  server.stop();
-
-  // Output feedback (captured by slash command)
-  emitAnnotateOutcome(result);
-  process.exit(0);
+  await completeAnnotateCommand({
+    waitForDecision: server.waitForDecision,
+    settleAfterDecision: () => Bun.sleep(1500),
+    stopServer: server.stop,
+    requireApproval: requireApprovalFlag,
+    resultFile,
+    emitLegacyOutcome: emitAnnotateOutcome,
+  });
 
 } else if (args[0] === "annotate-last" || args[0] === "last") {
   // ============================================

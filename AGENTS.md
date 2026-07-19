@@ -268,6 +268,12 @@ User annotates content, provides feedback
 Send Annotations → feedback sent to agent session
 ```
 
+### Strict direct annotate results
+
+Direct `plannotator annotate` invocations may add `--require-approval` and/or `--result-file <path>` only with `--gate --json`; both reject `--hook` and are not shared with OpenCode/Pi slash-command parsing. Legacy plaintext, JSON, hook, and exit behavior remains unchanged when neither strict option is present.
+
+Strict decisions use one newline-terminated JSON record on stdout and, when requested, identical bytes in the result file. Approval exits `0`; with `--require-approval`, annotated and dismissed decisions are published before a nonzero exit. Result paths resolve from the invocation working directory, require an existing parent and absent destination, and publish via a flushed/closed `0600` same-directory temporary file plus an atomic no-clobber hard link—never copy or overwrite fallback. Keep reviewed sources at stable project paths; unique result and diagnostic log files may use a narrow temporary directory. Explicit Close emits `dismissed`; missing results or process/browser failures are recovery cases, never approval.
+
 ## Archive Flow
 
 ```
