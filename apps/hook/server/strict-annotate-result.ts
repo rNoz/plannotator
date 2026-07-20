@@ -14,6 +14,15 @@ export interface AnnotateOutcome {
   approved?: boolean;
 }
 
+/**
+ * Exit code for gate errors, following the grep convention:
+ * `0` = approved, `1` = negative human outcome (annotated/dismissed under
+ * `--require-approval`), `2` = the gate itself was misconfigured or could not
+ * start/deliver a decision (usage, startup, validation, and publication
+ * failures). A gate error never publishes a decision record.
+ */
+export const STRICT_GATE_ERROR_EXIT_CODE = 2;
+
 export function serializeStrictAnnotateResult(
   result: AnnotateOutcome,
 ): string {

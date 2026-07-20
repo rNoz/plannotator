@@ -18,6 +18,7 @@ import {
   assertResultPathAvailable,
   resolveResultFilePath,
   serializeStrictAnnotateResult,
+  STRICT_GATE_ERROR_EXIT_CODE,
   writeAnnotateResultFile,
 } from "./strict-annotate-result";
 
@@ -86,6 +87,15 @@ describe("strict annotate exit policy", () => {
     expect(
       annotateOutcomeExitCode({ exit: true, feedback: "" }, false),
     ).toBe(0);
+  });
+
+  test("reserves exit 2 for gate errors, distinct from decision outcomes", () => {
+    // grep convention: 0 = approved, 1 = negative human outcome,
+    // 2 = the gate itself was misconfigured or could not start.
+    expect(STRICT_GATE_ERROR_EXIT_CODE).toBe(2);
+    expect(
+      annotateOutcomeExitCode({ exit: true, feedback: "" }, true),
+    ).toBe(1);
   });
 });
 

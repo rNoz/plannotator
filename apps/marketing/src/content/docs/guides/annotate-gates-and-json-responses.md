@@ -136,4 +136,4 @@ See [Hook Integration](/docs/guides/hook-integration/) for copy-paste recipes th
 
 ## Exit codes
 
-By default, every decision exits `0`; existing plaintext, JSON, and hook integrations are unchanged. With `--require-approval`, only `approved` exits `0`. `annotated` and `dismissed` publish their JSON result before exiting nonzero.
+By default, every decision exits `0`; existing plaintext, JSON, and hook integrations are unchanged. With `--require-approval`, only `approved` exits `0`; `annotated` and `dismissed` publish their JSON result before exiting `1`. Strict invocations that are misconfigured or cannot start or deliver a decision — bad flag combinations, an invalid `--result-file` destination, or a failed atomic publish — exit `2` without publishing a decision, following the grep convention (`0` approved, `1` not approved, `2` the gate itself errored).

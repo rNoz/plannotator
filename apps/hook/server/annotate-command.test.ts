@@ -144,35 +144,74 @@ describe("completeAnnotateCommand", () => {
     expect(approvalOnly.resultBytes).toEqual([]);
   });
 
-  test("does not emit stdout or exit when result publication fails", async () => {
+  test("exits 2 without emitting stdout when result publication fails", async () => {
     const events: string[] = [];
+    const errors: string[] = [];
 
-    await expect(
-      completeAnnotateCommand({
-        waitForDecision: async () => ({
-          approved: false,
-          feedback: "revise",
-        }),
-        settleAfterDecision: async () => {},
-        stopServer: () => {},
-        requireApproval: true,
-        resultFile: "/raced.json",
-        writeResultFile: async () => {
-          events.push("result");
-          throw new Error("destination appeared");
-        },
-        writeStdout: async () => {
-          events.push("stdout");
-        },
-        emitLegacyOutcome: () => {
-          events.push("legacy");
-        },
-        exit: (code) => {
-          events.push(`exit:${code}`);
-        },
+    await completeAnnotateCommand({
+      waitForDecision: async () => ({
+        approved: false,
+        feedback: "revise",
       }),
-    ).rejects.toThrow("destination appeared");
+      settleAfterDecision: async () => {},
+      stopServer: () => {},
+      requireApproval: true,
+      resultFile: "/raced.json",
+      writeResultFile: async () => {
+        events.push("result");
+        throw new Error("destination appeared");
+      },
+      writeStdout: async () => {
+        events.push("stdout");
+      },
+      emitLegacyOutcome: () => {
+        events.push("legacy");
+      },
+      exit: (code) => {
+        events.push(`exit:${code}`);
+      },
+      logError: (message) => {
+        errors.push(message);
+      },
+    });
 
-    expect(events).toEqual(["result"]);
+    // No decision record was delivered, so this is an environment error
+    // (exit 2), never a reviewer outcome — and never approval.
+    expect(events).toEqual(["result", "exit:2"]);
+    expect(errors).toEqual(["destination appeared"]);
+  });
+
+  test("exits 2 when the stdout record cannot be written", async () => {
+    const events: string[] = [];
+    const errors: string[] = [];
+
+    await completeAnnotateCommand({
+      waitForDecision: async () => ({
+        approved: true,
+        feedback: "",
+      }),
+      settleAfterDecision: async () => {},
+      stopServer: () => {},
+      requireApproval: true,
+      writeResultFile: async () => {
+        events.push("result");
+      },
+      writeStdout: async () => {
+        events.push("stdout");
+        throw new Error("stdout closed");
+      },
+      emitLegacyOutcome: () => {
+        events.push("legacy");
+      },
+      exit: (code) => {
+        events.push(`exit:${code}`);
+      },
+      logError: (message) => {
+        errors.push(message);
+      },
+    });
+
+    expect(events).toEqual(["stdout", "exit:2"]);
+    expect(errors).toEqual(["stdout closed"]);
   });
 });

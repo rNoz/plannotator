@@ -148,6 +148,7 @@ import { completeAnnotateCommand } from "./annotate-command";
 import {
   assertResultPathAvailable,
   resolveResultFilePath,
+  STRICT_GATE_ERROR_EXIT_CODE,
 } from "./strict-annotate-result";
 import path from "path";
 import { tmpdir } from "os";
@@ -170,7 +171,8 @@ try {
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  // Usage error: the gate was misconfigured, not a reviewer decision.
+  process.exit(STRICT_GATE_ERROR_EXIT_CODE);
 }
 const args = parsedStrictAnnotateOptions.remainingArgs;
 const requireApprovalFlag =
@@ -941,7 +943,8 @@ if (args[0] === "sessions") {
       await assertResultPathAvailable(resultFile);
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      // Startup validation error: the gate could not start.
+      process.exit(STRICT_GATE_ERROR_EXIT_CODE);
     }
   }
 
