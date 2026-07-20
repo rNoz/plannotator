@@ -745,6 +745,49 @@ describe("review-workspace", () => {
       expect(discoverWorkspaceRepoPaths(root)).toEqual([]);
     });
 
+    it("bounds discovery when a symlink escapes into a huge external tree", () => {
+      // Regression for the #1060 follow-up: a symlink inside the workspace
+      // pointing at a large unrelated tree must not be enumerated unboundedly
+      // before the server starts. The walk shares the file-discovery budget.
+      const root = makeTempDir("plannotator-workspace-symlink-budget-");
+      const huge = makeTempDir("plannotator-workspace-symlink-budget-target-");
+      // 40 directories, each with 5 subdirectories — 200+ nodes, no repos.
+      for (let i = 0; i < 40; i++) {
+        for (let j = 0; j < 5; j++) {
+          mkdirSync(join(huge, `dir-${String(i).padStart(2, "0")}`, `sub-${j}`), { recursive: true });
+        }
+      }
+      linkDirectory(huge, join(root, "escape"));
+      // A legitimate repo that sorts BEFORE the escape link so it is found
+      // within the budget.
+      const repo = join(root, "app");
+      mkdirSync(repo, { recursive: true });
+      initRepo(repo);
+
+      const prior = process.env.PLANNOTATOR_FILE_BROWSER_MAX_FILES;
+      process.env.PLANNOTATOR_FILE_BROWSER_MAX_FILES = "25";
+      try {
+        const repos = discoverWorkspaceRepoPaths(root);
+        expect(repos).toEqual([repo]);
+      } finally {
+        if (prior === undefined) delete process.env.PLANNOTATOR_FILE_BROWSER_MAX_FILES;
+        else process.env.PLANNOTATOR_FILE_BROWSER_MAX_FILES = prior;
+      }
+    });
+
+    it("keeps discovering symlinked repos under the default budget", () => {
+      // The budget must not break the feature it bounds: an external
+      // symlinked repo is still found with default limits.
+      const root = makeTempDir("plannotator-workspace-symlink-budget-ok-");
+      const targetRoot = makeTempDir("plannotator-workspace-symlink-budget-ok-target-");
+      const targetRepo = join(targetRoot, "service");
+      mkdirSync(targetRepo, { recursive: true });
+      initRepo(targetRepo);
+      linkDirectory(targetRepo, join(root, "linked"));
+
+      expect(discoverWorkspaceRepoPaths(root)).toEqual([join(root, "linked")]);
+    });
+
     it("chooses the first logical alias deterministically for duplicate targets", () => {
       const root = makeTempDir("plannotator-workspace-symlink-duplicates-");
       const targetRoot = makeTempDir("plannotator-workspace-symlink-duplicates-target-");
