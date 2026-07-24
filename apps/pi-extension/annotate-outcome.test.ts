@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyAnnotateOutcome } from "./annotate-outcome";
+import { classifyAnnotateOutcome } from "./annotate-outcome.ts";
 
 describe("Pi annotate outcomes", () => {
   test("delivers approved file feedback before the approval notification", () => {
