@@ -503,3 +503,123 @@ describe("annotate server: source save", () => {
     }
   });
 });
+
+describe("annotate server: approval notes", () => {
+  let savedPort: string | undefined;
+  let savedRemote: string | undefined;
+
+  beforeEach(() => {
+    savedPort = process.env.PLANNOTATOR_PORT;
+    savedRemote = process.env.PLANNOTATOR_REMOTE;
+    delete process.env.PLANNOTATOR_PORT;
+    process.env.PLANNOTATOR_REMOTE = "0";
+  });
+
+  afterEach(() => {
+    if (savedPort === undefined) delete process.env.PLANNOTATOR_PORT;
+    else process.env.PLANNOTATOR_PORT = savedPort;
+    if (savedRemote === undefined) delete process.env.PLANNOTATOR_REMOTE;
+    else process.env.PLANNOTATOR_REMOTE = savedRemote;
+  });
+
+  test("returns the explicit approval-notes capability", async () => {
+    for (const approvalNotesSupported of [true, false]) {
+      const server = await startAnnotateServer({
+        markdown: "# Test",
+        filePath: join(tmpdir(), "approval-capability.md"),
+        htmlContent: MINIMAL_HTML,
+        approvalNotesSupported,
+      });
+
+      try {
+        const response = await fetch(`${server.url}/api/plan`);
+        const plan = await response.json() as { approvalNotesSupported?: boolean };
+        expect(plan.approvalNotesSupported).toBe(approvalNotesSupported);
+      } finally {
+        server.stop();
+      }
+    }
+  });
+
+  test("preserves feedback and annotations on approval", async () => {
+    const server = await startAnnotateServer({
+      markdown: "# Test",
+      filePath: join(tmpdir(), "approval-notes.md"),
+      htmlContent: MINIMAL_HTML,
+      approvalNotesSupported: true,
+    });
+
+    try {
+      const response = await fetch(`${server.url}/api/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          feedback: "Keep the retry bounded.",
+          annotations: [{ id: "a1" }],
+          draftGeneration: 3,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await server.waitForDecision()).toEqual({
+        approved: true,
+        feedback: "Keep the retry bounded.",
+        annotations: [{ id: "a1" }],
+      });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("keeps bodyless approval compatible", async () => {
+    const server = await startAnnotateServer({
+      markdown: "# Test",
+      filePath: join(tmpdir(), "approval-bodyless.md"),
+      htmlContent: MINIMAL_HTML,
+    });
+
+    try {
+      const response = await fetch(`${server.url}/api/approve`, { method: "POST" });
+      expect(response.status).toBe(200);
+      expect(await server.waitForDecision()).toEqual({
+        approved: true,
+        feedback: "",
+        annotations: [],
+      });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("rejects malformed or wrong-type approval bodies without resolving", async () => {
+    const server = await startAnnotateServer({
+      markdown: "# Test",
+      filePath: join(tmpdir(), "approval-invalid.md"),
+      htmlContent: MINIMAL_HTML,
+    });
+
+    try {
+      const decision = server.waitForDecision();
+      const malformed = await fetch(`${server.url}/api/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      });
+      expect(malformed.status).toBe(400);
+      expect(await Promise.race([decision.then(() => "resolved"), Bun.sleep(25).then(() => "pending")])).toBe("pending");
+
+      const wrongType = await fetch(`${server.url}/api/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: 42, annotations: [] }),
+      });
+      expect(wrongType.status).toBe(400);
+      expect(await Promise.race([decision.then(() => "resolved"), Bun.sleep(25).then(() => "pending")])).toBe("pending");
+
+      await fetch(`${server.url}/api/approve`, { method: "POST" });
+      expect(await decision).toEqual({ approved: true, feedback: "", annotations: [] });
+    } finally {
+      server.stop();
+    }
+  });
+});

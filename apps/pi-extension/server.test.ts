@@ -325,6 +325,116 @@ describe("pi startup file-cache warm", () => {
   });
 });
 
+describe("pi annotate approval notes", () => {
+  test("returns the explicit approval-notes capability", async () => {
+    for (const approvalNotesSupported of [true, false]) {
+      delete process.env.PLANNOTATOR_PORT;
+      const server = await startAnnotateServer({
+        markdown: "# Test",
+        filePath: join(makeTempDir("plannotator-pi-approval-capability-"), "test.md"),
+        htmlContent: "<!doctype html><html><body>annotate</body></html>",
+        origin: "pi",
+        approvalNotesSupported,
+      });
+
+      try {
+        const response = await fetch(`${server.url}/api/plan`);
+        const plan = await response.json() as { approvalNotesSupported?: boolean };
+        expect(plan.approvalNotesSupported).toBe(approvalNotesSupported);
+      } finally {
+        server.stop();
+      }
+    }
+  });
+
+  test("preserves feedback and annotations on approval", async () => {
+    delete process.env.PLANNOTATOR_PORT;
+    const server = await startAnnotateServer({
+      markdown: "# Test",
+      filePath: join(makeTempDir("plannotator-pi-approval-notes-"), "test.md"),
+      htmlContent: "<!doctype html><html><body>annotate</body></html>",
+      origin: "pi",
+      approvalNotesSupported: true,
+    });
+
+    try {
+      const response = await fetch(`${server.url}/api/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          feedback: "Keep the retry bounded.",
+          annotations: [{ id: "a1" }],
+          draftGeneration: 3,
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await server.waitForDecision()).toEqual({
+        approved: true,
+        feedback: "Keep the retry bounded.",
+        annotations: [{ id: "a1" }],
+      });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("keeps bodyless approval compatible", async () => {
+    delete process.env.PLANNOTATOR_PORT;
+    const server = await startAnnotateServer({
+      markdown: "# Test",
+      filePath: join(makeTempDir("plannotator-pi-approval-bodyless-"), "test.md"),
+      htmlContent: "<!doctype html><html><body>annotate</body></html>",
+      origin: "pi",
+    });
+
+    try {
+      const response = await fetch(`${server.url}/api/approve`, { method: "POST" });
+      expect(response.status).toBe(200);
+      expect(await server.waitForDecision()).toEqual({
+        approved: true,
+        feedback: "",
+        annotations: [],
+      });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("rejects malformed or wrong-type approval bodies without resolving", async () => {
+    delete process.env.PLANNOTATOR_PORT;
+    const server = await startAnnotateServer({
+      markdown: "# Test",
+      filePath: join(makeTempDir("plannotator-pi-approval-invalid-"), "test.md"),
+      htmlContent: "<!doctype html><html><body>annotate</body></html>",
+      origin: "pi",
+    });
+
+    try {
+      const decision = server.waitForDecision();
+      const malformed = await fetch(`${server.url}/api/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      });
+      expect(malformed.status).toBe(400);
+      expect(await Promise.race([decision.then(() => "resolved"), Bun.sleep(25).then(() => "pending")])).toBe("pending");
+
+      const wrongType = await fetch(`${server.url}/api/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: 42, annotations: [] }),
+      });
+      expect(wrongType.status).toBe(400);
+      expect(await Promise.race([decision.then(() => "resolved"), Bun.sleep(25).then(() => "pending")])).toBe("pending");
+
+      await fetch(`${server.url}/api/approve`, { method: "POST" });
+      expect(await decision).toEqual({ approved: true, feedback: "", annotations: [] });
+    } finally {
+      server.stop();
+    }
+  });
+});
+
 describe("pi review server", () => {
   const testIfJj = hasJj() ? test : test.skip;
   const testIfUnix = process.platform === "win32" ? test.skip : test;
