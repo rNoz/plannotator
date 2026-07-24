@@ -195,6 +195,34 @@ describe("Pi file browser watcher", () => {
 		}
 	});
 
+	test("keeps watching after atomic rename-over saves", async () => {
+		const root = makeTempDir("plannotator-pi-watch-atomic-");
+		const target = join(root, "plan.md");
+		writeFileSync(target, "initial");
+		await waitForWatcher();
+		const origin = await startWatchServer();
+		const url = new URL(`${origin}/api/reference/files/stream`);
+		url.searchParams.append("filePath", target);
+		const collector = collectSSE(await fetch(url));
+
+		try {
+			await collector.next();
+			await waitForWatcher();
+			for (const content of ["first", "second"]) {
+				const replacement = join(root, `plan-${content}.tmp`);
+				writeFileSync(replacement, content);
+				renameSync(replacement, target);
+				expect(await collector.next()).toMatchObject({
+					type: "changed",
+					dirPath: root,
+					reason: "files",
+				});
+			}
+		} finally {
+			await collector.close();
+		}
+	});
+
 	test("allows a missing leaf when its parent exists", async () => {
 		const root = makeTempDir("plannotator-pi-watch-missing-");
 		const target = join(root, "future.md");
